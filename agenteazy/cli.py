@@ -1,7 +1,13 @@
 """AgentEazy CLI - Turn any GitHub repo into an AI agent in one command."""
 
+import json
 import os
 import shutil
+import subprocess
+import sys
+import urllib.request
+import urllib.error
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -19,8 +25,40 @@ app = typer.Typer(
     help="Turn any GitHub repo into an AI agent in one command.",
     add_completion=False,
 )
+registry_app = typer.Typer(help="Manage the agent registry server.")
+app.add_typer(registry_app, name="registry")
+
 console = Console()
 
+
+# ── Helper: register with registry ──────────────────────────────────
+
+def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: str, analysis) -> bool:
+    """POST agent details to the registry. Returns True on success."""
+    payload = {
+        "name": agent_config.get("name", analysis.repo_name),
+        "description": agent_config.get("description", ""),
+        "url": deploy_url,
+        "language": analysis.language,
+        "verbs": agent_config.get("verbs", []),
+        "entry_function": agent_config.get("entry_function", ""),
+        "entry_file": agent_config.get("entry_file", ""),
+        "tags": agent_config.get("tags", []),
+    }
+    data = json.dumps(payload).encode()
+    url = f"{registry_url.rstrip('/')}/registry/register"
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        console.print(f"[bold green]Registered[/bold green] with registry: {result}")
+        return True
+    except Exception as e:
+        console.print(f"[yellow]Warning:[/yellow] Could not register with registry: {e}")
+        return False
+
+
+# ── Commands ─────────────────────────────────────────────────────────
 
 @app.command()
 def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand")):
@@ -145,9 +183,9 @@ def deploy(
     repo_url: str = typer.Argument(..., help="GitHub repo URL, user/repo shorthand, or local path"),
     local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
     port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
 ):
     """Analyze, wrap, and deploy an agent. Deploys to Modal by default, or locally with --local."""
-    import subprocess as _sp
 
     console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
 
@@ -201,12 +239,12 @@ def deploy(
         # Local deployment path
         console.print("[dim]Step 3/4: Installing dependencies (fastapi, uvicorn)...[/dim]")
         try:
-            _sp.check_call(
-                [os.sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"],
-                stdout=_sp.DEVNULL,
-                stderr=_sp.DEVNULL,
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
-        except _sp.CalledProcessError as e:
+        except subprocess.CalledProcessError as e:
             console.print(f"[bold red]Error installing deps:[/bold red] {e}")
             raise typer.Exit(code=1)
 
@@ -240,6 +278,11 @@ def deploy(
             title="AgentEazy - Modal Deploy",
         ))
 
+        # Auto-register with registry if URL provided
+        if registry:
+            console.print(f"\n[dim]Registering with registry at {registry}...[/dim]")
+            _register_with_registry(registry, agent_config, url, analysis)
+
 
 @app.command()
 def test(
@@ -259,9 +302,108 @@ def test(
 
 
 @app.command()
-def search(query: str = typer.Argument(..., help="Search query")):
-    """Search for existing wrapped agents."""
-    console.print("\n[bold yellow]Search:[/bold yellow] coming soon\n")
+def search(
+    query: str = typer.Argument(..., help="Search query"),
+    registry: str = typer.Option("http://localhost:8001", "--registry", help="Registry server URL"),
+):
+    """Search for agents in the registry."""
+    url = f"{registry.rstrip('/')}/registry/search?q={urllib.request.quote(query)}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        agents = json.loads(resp.read())
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        raise typer.Exit(code=1)
+
+    if not agents:
+        console.print(f"\n[yellow]No agents found matching[/yellow] '{query}'\n")
+        return
+
+    table = Table(title=f"Search results for '{query}'")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Description")
+    table.add_column("URL", style="dim")
+    table.add_column("Language")
+    table.add_column("Verbs", style="green")
+    table.add_column("Tags", style="magenta")
+
+    for a in agents:
+        table.add_row(
+            a.get("name", ""),
+            a.get("description", ""),
+            a.get("url", ""),
+            a.get("language", ""),
+            ", ".join(a.get("verbs", [])),
+            ", ".join(a.get("tags", [])),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command(name="list")
+def list_agents(
+    registry: str = typer.Option("http://localhost:8001", "--registry", help="Registry server URL"),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max agents to show"),
+    offset: int = typer.Option(0, "--offset", help="Offset for pagination"),
+):
+    """List all agents in the registry."""
+    url = f"{registry.rstrip('/')}/registry/all?limit={limit}&offset={offset}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        agents = json.loads(resp.read())
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        raise typer.Exit(code=1)
+
+    if not agents:
+        console.print("\n[yellow]No agents registered yet.[/yellow]\n")
+        return
+
+    table = Table(title=f"Registered Agents ({len(agents)})")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Description")
+    table.add_column("URL", style="dim")
+    table.add_column("Language")
+    table.add_column("Verbs", style="green")
+    table.add_column("Tags", style="magenta")
+    table.add_column("Status", style="bold")
+
+    for a in agents:
+        status = a.get("status", "unknown")
+        status_style = "green" if status == "active" else "red"
+        table.add_row(
+            a.get("name", ""),
+            a.get("description", ""),
+            a.get("url", ""),
+            a.get("language", ""),
+            ", ".join(a.get("verbs", [])),
+            ", ".join(a.get("tags", [])),
+            f"[{status_style}]{status}[/{status_style}]",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
+# ── Registry subcommands ─────────────────────────────────────────────
+
+@registry_app.command("start")
+def registry_start(
+    port: int = typer.Option(8001, "--port", "-p", help="Port for the registry server"),
+):
+    """Start the agent registry server locally."""
+    console.print(f"\n[bold blue]Starting registry server[/bold blue] on port {port}...\n")
+    registry_path = os.path.join(os.path.dirname(__file__), "registry.py")
+    try:
+        subprocess.run(
+            [sys.executable, registry_path],
+            env={**os.environ, "REGISTRY_PORT": str(port)},
+        )
+    except KeyboardInterrupt:
+        console.print("\n[dim]Registry server stopped.[/dim]")
 
 
 if __name__ == "__main__":
