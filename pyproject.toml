@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "agentwrap"
+name = "agenteazy"
 version = "0.1.0"
 description = "Turn any GitHub repo into an AI agent in one command"
 readme = "README.md"
@@ -16,7 +16,7 @@ dependencies = [
 ]
 
 [project.scripts]
-agentwrap = "agentwrap.cli:app"
+agenteazy = "agenteazy.cli:app"
 
 [tool.setuptools.packages.find]
-include = ["agentwrap*"]
+include = ["agenteazy*"]

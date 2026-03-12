@@ -1,5 +1,5 @@
 """
-Repo Analyzer - The brain of Agent Wrap (Day 1)
+Repo Analyzer - The brain of AgentEazy (Day 1)
 
 Clones a GitHub repo, detects:
 - Language (Python only for v0.1)
@@ -110,7 +110,7 @@ def clone_repo(url: str, target_dir: Optional[str] = None) -> tuple[str, str]:
     clone_url, repo_name = parse_github_url(url)
 
     if target_dir is None:
-        target_dir = os.path.join(tempfile.gettempdir(), "agentwrap", repo_name)
+        target_dir = os.path.join(tempfile.gettempdir(), "agenteazy", repo_name)
 
     # Clean up if exists
     if os.path.exists(target_dir):

@@ -50,7 +50,7 @@ AGENT_CONFIG = json.loads({config_json_repr})
 
 
 # --- Load the wrapped module ---
-REPO_PATH = os.environ.get("AGENTWRAP_REPO_PATH", os.path.join(os.path.dirname(__file__), "repo"))
+REPO_PATH = os.environ.get("AGENTEAZY_REPO_PATH", os.path.join(os.path.dirname(__file__), "repo"))
 sys.path.insert(0, REPO_PATH)
 
 ENTRY_MODULE = "{entry_module}"
