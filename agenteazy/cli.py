@@ -8,6 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agenteazy.analyzer import analyze_repo
+from agenteazy.deployer import deploy_local, test_agent
 from agenteazy.generator import generate_agent_json, save_agent_json
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
 
@@ -132,9 +133,93 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
 
 
 @app.command()
-def deploy(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand")):
-    """Deploy a wrapped agent to the cloud."""
-    console.print("\n[bold yellow]Deploy:[/bold yellow] coming soon\n")
+def deploy(
+    repo_url: str = typer.Argument(..., help="GitHub repo URL, user/repo shorthand, or local path"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port for the local server"),
+):
+    """Analyze, wrap, install deps, and deploy a local agent server."""
+    import subprocess as _sp
+
+    console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
+
+    # Step 1: Analyze
+    console.print("[dim]Step 1/4: Analyzing repo...[/dim]")
+    try:
+        analysis = analyze_repo(repo_url)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    if analysis.errors:
+        for err in analysis.errors:
+            console.print(f"[yellow]Warning:[/yellow] {err}")
+
+    if not analysis.suggested_entry:
+        console.print("[bold red]Error:[/bold red] No suitable entry point found.")
+        raise typer.Exit(code=1)
+
+    # Step 2: Generate agent.json + wrapper
+    console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
+    agent_config = generate_agent_json(analysis)
+    wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+
+    if not validate_wrapper(wrapper_code):
+        console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
+        raise typer.Exit(code=1)
+
+    output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
+    os.makedirs(output_dir, exist_ok=True)
+
+    save_agent_json(agent_config, output_dir)
+
+    wrapper_path = os.path.join(output_dir, "wrapper.py")
+    with open(wrapper_path, "w") as f:
+        f.write(wrapper_code)
+
+    reqs_path = os.path.join(output_dir, "requirements.txt")
+    wrapper_deps = ["fastapi>=0.100.0", "uvicorn>=0.23.0"]
+    all_deps = analysis.dependencies + wrapper_deps
+    with open(reqs_path, "w") as f:
+        f.write("\n".join(all_deps) + "\n")
+
+    # Step 3: Install deps
+    console.print("[dim]Step 3/4: Installing dependencies (fastapi, uvicorn)...[/dim]")
+    try:
+        _sp.check_call(
+            [os.sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"],
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+        )
+    except _sp.CalledProcessError as e:
+        console.print(f"[bold red]Error installing deps:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    # Step 4: Deploy locally
+    console.print("[dim]Step 4/4: Starting local server...[/dim]")
+    try:
+        deploy_local(output_dir, port=port)
+    except FileNotFoundError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except KeyboardInterrupt:
+        pass
+
+
+@app.command()
+def test(
+    url: str = typer.Option("http://localhost:8000", "--url", "-u", help="Base URL of running agent"),
+):
+    """Test all endpoints of a running agent."""
+    console.print(f"\n[bold blue]Testing agent at[/bold blue] {url}\n")
+    results = test_agent(url)
+
+    all_passed = all(r["passed"] for r in results.values())
+    if all_passed:
+        console.print("[bold green]All endpoints passed![/bold green]\n")
+    else:
+        failed = [name for name, r in results.items() if not r["passed"]]
+        console.print(f"[bold red]Failed endpoints:[/bold red] {', '.join(failed)}\n")
+        raise typer.Exit(code=1)
 
 
 @app.command()
