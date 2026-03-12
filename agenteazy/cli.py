@@ -1,4 +1,4 @@
-"""AgentWrap CLI - Turn any GitHub repo into an AI agent in one command."""
+"""AgentEazy CLI - Turn any GitHub repo into an AI agent in one command."""
 
 import os
 
@@ -7,12 +7,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agentwrap.analyzer import analyze_repo
-from agentwrap.generator import generate_agent_json, save_agent_json
-from agentwrap.wrapper_template import generate_wrapper, validate_wrapper
+from agenteazy.analyzer import analyze_repo
+from agenteazy.generator import generate_agent_json, save_agent_json
+from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
 
 app = typer.Typer(
-    name="agentwrap",
+    name="agenteazy",
     help="Turn any GitHub repo into an AI agent in one command.",
     add_completion=False,
 )
@@ -97,8 +97,8 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
         console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
         raise typer.Exit(code=1)
 
-    # Save everything to ./agentwrap-output/{repo_name}/
-    output_dir = os.path.join(".", "agentwrap-output", analysis.repo_name)
+    # Save everything to ./agenteazy-output/{repo_name}/
+    output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
     os.makedirs(output_dir, exist_ok=True)
 
     # Save agent.json
@@ -127,7 +127,7 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
         f"  cd {output_dir}\n"
         f"  pip install -r requirements.txt\n"
         f"  python wrapper.py",
-        title="AgentWrap",
+        title="AgentEazy",
     ))
 
 
