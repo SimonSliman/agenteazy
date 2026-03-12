@@ -8,6 +8,113 @@ import sys
 import tempfile
 
 
+def check_modal_auth() -> bool:
+    """Check if Modal is authenticated by attempting 'modal app list'.
+
+    Modal CLI stores tokens in ~/.modal.toml after 'modal setup'.
+    This function verifies that a valid token exists by making an
+    actual authenticated API call.
+
+    Returns True if authenticated, False otherwise.
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "modal", "app", "list"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        # If the command fails with a token error, auth is not set up
+        combined = result.stdout + result.stderr
+        if "Token missing" in combined or "Could not authenticate" in combined:
+            return False
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def list_deployed_agents() -> list:
+    """Run 'modal app list' and parse the output to show all currently deployed agents.
+
+    Returns a list of dicts with keys: name, app_id, state.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "modal", "app", "list"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to list Modal apps: {result.stderr}")
+
+    agents = []
+    lines = result.stdout.strip().splitlines()
+
+    for line in lines:
+        # Skip header/separator lines
+        stripped = line.strip()
+        if not stripped or stripped.startswith("│") is False and "─" in stripped:
+            continue
+
+        # Parse table rows — Modal outputs a table with columns like:
+        # App Name | App ID | State
+        # We split on whitespace clusters or pipe characters
+        if "│" in line:
+            parts = [p.strip() for p in line.split("│") if p.strip()]
+            if len(parts) >= 2 and parts[0].lower() not in ("app name", "name", "description"):
+                agents.append({
+                    "name": parts[0],
+                    "app_id": parts[1] if len(parts) > 1 else "",
+                    "state": parts[2] if len(parts) > 2 else "unknown",
+                })
+        else:
+            # Fallback: split on whitespace
+            parts = stripped.split()
+            if len(parts) >= 2 and not any(c in parts[0] for c in ("─", "═", "+")):
+                agents.append({
+                    "name": parts[0],
+                    "app_id": parts[1] if len(parts) > 1 else "",
+                    "state": parts[2] if len(parts) > 2 else "unknown",
+                })
+
+    return agents
+
+
+def stop_agent(name: str) -> bool:
+    """Run 'modal app stop {name}' to remove a deployed agent.
+
+    Returns True if the stop command succeeded.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "modal", "app", "stop", name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    return result.returncode == 0
+
+
+def get_agent_logs(name: str) -> str:
+    """Run 'modal app logs {name}' to get recent logs.
+
+    Returns the log output as a string.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "modal", "app", "logs", name],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to get logs for '{name}': {result.stderr}")
+
+    return result.stdout
+
+
 def deploy_to_modal(output_dir: str, agent_name: str) -> str:
     """
     Deploy a wrapped agent to Modal as a serverless ASGI endpoint.
@@ -19,6 +126,11 @@ def deploy_to_modal(output_dir: str, agent_name: str) -> str:
     Returns:
         The live URL of the deployed agent.
     """
+    # Check authentication before attempting deploy
+    if not check_modal_auth():
+        print("Modal not authenticated. Run: modal setup")
+        sys.exit(1)
+
     output_dir = os.path.abspath(output_dir)
 
     # Validate required files exist
