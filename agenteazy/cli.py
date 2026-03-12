@@ -10,6 +10,7 @@ from rich.table import Table
 
 from agenteazy.analyzer import analyze_repo
 from agenteazy.deployer import deploy_local, test_agent
+from agenteazy.modal_deployer import deploy_to_modal
 from agenteazy.generator import generate_agent_json, save_agent_json
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
 
@@ -142,9 +143,10 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
 @app.command()
 def deploy(
     repo_url: str = typer.Argument(..., help="GitHub repo URL, user/repo shorthand, or local path"),
-    port: int = typer.Option(8000, "--port", "-p", help="Port for the local server"),
+    local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
+    port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
 ):
-    """Analyze, wrap, install deps, and deploy a local agent server."""
+    """Analyze, wrap, and deploy an agent. Deploys to Modal by default, or locally with --local."""
     import subprocess as _sp
 
     console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
@@ -183,33 +185,60 @@ def deploy(
     with open(wrapper_path, "w") as f:
         f.write(wrapper_code)
 
+    # Copy repo source into output_dir/repo/
+    repo_dest = os.path.join(output_dir, "repo")
+    if os.path.exists(repo_dest):
+        shutil.rmtree(repo_dest)
+    shutil.copytree(analysis.local_path, repo_dest, dirs_exist_ok=True)
+
     reqs_path = os.path.join(output_dir, "requirements.txt")
     wrapper_deps = ["fastapi>=0.100.0", "uvicorn>=0.23.0"]
     all_deps = analysis.dependencies + wrapper_deps
     with open(reqs_path, "w") as f:
         f.write("\n".join(all_deps) + "\n")
 
-    # Step 3: Install deps
-    console.print("[dim]Step 3/4: Installing dependencies (fastapi, uvicorn)...[/dim]")
-    try:
-        _sp.check_call(
-            [os.sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"],
-            stdout=_sp.DEVNULL,
-            stderr=_sp.DEVNULL,
-        )
-    except _sp.CalledProcessError as e:
-        console.print(f"[bold red]Error installing deps:[/bold red] {e}")
-        raise typer.Exit(code=1)
+    if local:
+        # Local deployment path
+        console.print("[dim]Step 3/4: Installing dependencies (fastapi, uvicorn)...[/dim]")
+        try:
+            _sp.check_call(
+                [os.sys.executable, "-m", "pip", "install", "fastapi", "uvicorn"],
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+            )
+        except _sp.CalledProcessError as e:
+            console.print(f"[bold red]Error installing deps:[/bold red] {e}")
+            raise typer.Exit(code=1)
 
-    # Step 4: Deploy locally
-    console.print("[dim]Step 4/4: Starting local server...[/dim]")
-    try:
-        deploy_local(output_dir, port=port)
-    except FileNotFoundError as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
-        raise typer.Exit(code=1)
-    except KeyboardInterrupt:
-        pass
+        console.print("[dim]Step 4/4: Starting local server...[/dim]")
+        try:
+            deploy_local(output_dir, port=port)
+        except FileNotFoundError as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(code=1)
+        except KeyboardInterrupt:
+            pass
+    else:
+        # Modal deployment path
+        console.print("[dim]Step 3/4: Deploying to Modal...[/dim]")
+        try:
+            url = deploy_to_modal(output_dir, analysis.repo_name)
+        except Exception as e:
+            console.print(f"[bold red]Error deploying to Modal:[/bold red] {e}")
+            raise typer.Exit(code=1)
+
+        console.print()
+        console.print(Panel.fit(
+            f"[bold green]Deployed![/bold green] Agent is live at:\n\n"
+            f"  [cyan]{url}[/cyan]\n\n"
+            f"Endpoints:\n"
+            f"  GET  {url}/\n"
+            f"  GET  {url}/health\n"
+            f"  POST {url}/ask\n"
+            f"  POST {url}/do\n"
+            f"  GET  {url}/.well-known/agent.json",
+            title="AgentEazy - Modal Deploy",
+        ))
 
 
 @app.command()
