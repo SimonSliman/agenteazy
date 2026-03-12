@@ -1,8 +1,8 @@
-# AgentWrap
+# AgentEazy
 
 **Turn any GitHub repo into an AI agent in one command.**
 
-AgentWrap analyzes a GitHub repository, detects its structure, and generates a FastAPI wrapper that exposes the repo's functionality as an agent with standardized endpoints.
+AgentEazy analyzes a GitHub repository, detects its structure, and generates a FastAPI wrapper that exposes the repo's functionality as an agent with standardized endpoints.
 
 ## Install
 
@@ -15,7 +15,7 @@ pip install -e .
 ### Analyze a repo
 
 ```bash
-agentwrap analyze pallets/markupsafe
+agenteazy analyze pallets/markupsafe
 ```
 
 Clones the repo and shows detected language, dependencies, functions, and suggested entry point.
@@ -23,15 +23,15 @@ Clones the repo and shows detected language, dependencies, functions, and sugges
 ### Wrap a repo
 
 ```bash
-agentwrap wrap pallets/markupsafe
+agenteazy wrap pallets/markupsafe
 ```
 
-Analyzes the repo, generates `agent.json`, a FastAPI `wrapper.py`, and `requirements.txt` in `./agentwrap-output/{repo_name}/`.
+Analyzes the repo, generates `agent.json`, a FastAPI `wrapper.py`, and `requirements.txt` in `./agenteazy-output/{repo_name}/`.
 
 ### Test locally
 
 ```bash
-cd agentwrap-output/markupsafe
+cd agenteazy-output/markupsafe
 pip install -r requirements.txt
 python wrapper.py
 ```
@@ -42,10 +42,10 @@ Then visit `http://localhost:8000/` for agent info, or `POST /do` to execute the
 
 | Command | Description |
 |---------|-------------|
-| `agentwrap analyze <repo>` | Analyze a GitHub repo |
-| `agentwrap wrap <repo>` | Generate agent.json + FastAPI wrapper |
-| `agentwrap deploy <repo>` | Deploy to cloud (coming soon) |
-| `agentwrap search <query>` | Search agents (coming soon) |
+| `agenteazy analyze <repo>` | Analyze a GitHub repo |
+| `agenteazy wrap <repo>` | Generate agent.json + FastAPI wrapper |
+| `agenteazy deploy <repo>` | Deploy to cloud (coming soon) |
+| `agenteazy search <query>` | Search agents (coming soon) |
 
 ## How it works
 
