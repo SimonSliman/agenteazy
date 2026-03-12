@@ -21,6 +21,12 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     entry_function = agent_config["entry"]["function"]
     entry_args = agent_config["entry"]["args"]
 
+    if not entry_file or not entry_function:
+        raise ValueError(
+            "Cannot generate wrapper: agent.json has no entry point configured. "
+            "Edit agent.json to set entry.file and entry.function."
+        )
+
     # Compute module name from file path
     entry_module = entry_file.replace(".py", "").replace("/", ".").replace(os.sep, ".")
 
@@ -38,13 +44,18 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
 import json
 import sys
 import os
+import signal
+import traceback
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 import uvicorn
 
 MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
+FUNCTION_TIMEOUT_SECONDS = 25
+_executor = ThreadPoolExecutor(max_workers=4)
 
 
 # --- Agent config ---
@@ -68,12 +79,26 @@ def _load_module():
             _module = importlib.import_module(ENTRY_MODULE)
         except ImportError:
             # Try loading by file path
-            spec = importlib.util.spec_from_file_location(
-                ENTRY_MODULE,
-                os.path.join(REPO_PATH, "{entry_file}"),
-            )
+            file_path = os.path.join(REPO_PATH, "{entry_file}")
+            if not os.path.isfile(file_path):
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Entry file not found: {{file_path}}. Check agent.json entry.file."
+                )
+            spec = importlib.util.spec_from_file_location(ENTRY_MODULE, file_path)
             _module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(_module)
+            try:
+                spec.loader.exec_module(_module)
+            except Exception as e:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to load module {{ENTRY_MODULE}}: {{type(e).__name__}}: {{e}}"
+                )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to import {{ENTRY_MODULE}}: {{type(e).__name__}}: {{e}}"
+            )
     return _module
 
 
@@ -81,7 +106,12 @@ def _get_entry_func():
     mod = _load_module()
     func = getattr(mod, ENTRY_FUNCTION, None)
     if func is None:
-        raise HTTPException(status_code=500, detail=f"Function {{ENTRY_FUNCTION}} not found in {{ENTRY_MODULE}}")
+        available = [n for n in dir(mod) if not n.startswith("_") and callable(getattr(mod, n, None))]
+        raise HTTPException(
+            status_code=500,
+            detail=f"Function '{{ENTRY_FUNCTION}}' not found in {{ENTRY_MODULE}}. "
+                   f"Available functions: {{', '.join(available) or 'none'}}"
+        )
     return func
 
 
@@ -110,7 +140,13 @@ def health():
 @app.post("/ask")
 def ask(body: dict = None):
     """Describe what this agent can do."""
-    func = _get_entry_func()
+    try:
+        func = _get_entry_func()
+        docstring = func.__doc__
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load agent: {{type(e).__name__}}: {{e}}")
     return {{
         "name": AGENT_CONFIG["name"],
         "description": AGENT_CONFIG["description"],
@@ -118,7 +154,7 @@ def ask(body: dict = None):
         "entry": AGENT_CONFIG["entry"],
         "capabilities": {{
             "args": AGENT_CONFIG["entry"]["args"],
-            "docstring": func.__doc__,
+            "docstring": docstring,
         }},
     }}
 
@@ -132,12 +168,37 @@ async def do(request: Request, body: dict = None):
         raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
 
     payload = (body or {{}}).get("input", body or {{}})
-    func = _get_entry_func()
     try:
-        result = func({call_args})
-        return {{"status": "completed", "output": result}}
+        func = _get_entry_func()
+    except HTTPException:
+        raise
     except Exception as e:
-        return {{"status": "error", "error": str(e)}}
+        raise HTTPException(status_code=500, detail=f"Failed to load agent: {{type(e).__name__}}: {{e}}")
+
+    try:
+        future = _executor.submit(func, {call_args})
+        result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+        return {{"status": "completed", "output": result}}
+    except FuturesTimeoutError:
+        future.cancel()
+        return JSONResponse(
+            status_code=504,
+            content={{
+                "status": "timeout",
+                "error": f"Function timed out after {{FUNCTION_TIMEOUT_SECONDS}} seconds",
+            }},
+        )
+    except Exception as e:
+        tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
+        limited_tb = "".join(tb_lines[-5:])
+        return JSONResponse(
+            status_code=500,
+            content={{
+                "status": "failed",
+                "error": str(e),
+                "traceback": limited_tb,
+            }},
+        )
 
 
 @app.get("/.well-known/agent.json")

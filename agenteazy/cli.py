@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -27,6 +28,9 @@ from agenteazy.modal_deployer import (
 from agenteazy.generator import generate_agent_json, save_agent_json, record_deploy
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
 
+# Global verbose flag — set via callback
+_verbose = False
+
 app = typer.Typer(
     name="agenteazy",
     help="Turn any GitHub repo into an AI agent in one command.",
@@ -36,6 +40,31 @@ registry_app = typer.Typer(help="Manage the agent registry server.")
 app.add_typer(registry_app, name="registry")
 
 console = Console()
+
+
+@app.callback()
+def main_callback(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full tracebacks for debugging"),
+):
+    """AgentEazy CLI."""
+    global _verbose
+    _verbose = verbose
+
+
+def _handle_error(e: Exception, context: str = "") -> None:
+    """Print a user-friendly error message. Show traceback only with --verbose."""
+    prefix = f" during {context}" if context else ""
+    error_msg = str(e)
+
+    # Strip RuntimeError wrapper if the message is already descriptive
+    if error_msg:
+        console.print(f"[bold red]Error{prefix}:[/bold red] {error_msg}")
+    else:
+        console.print(f"[bold red]Error{prefix}:[/bold red] {type(e).__name__}")
+
+    if _verbose:
+        console.print("\n[dim]Full traceback:[/dim]")
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 # ── Helper: register with registry ──────────────────────────────────
@@ -75,13 +104,14 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
         if not analysis.language:
+            console.print("\n[dim]Cannot continue without a supported language.[/dim]")
             raise typer.Exit(code=1)
 
     # Summary table
@@ -105,6 +135,8 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
             "Suggested entry",
             f"{entry.name}({', '.join(entry.args)}) in {entry.file}",
         )
+    else:
+        table.add_row("Suggested entry", "[yellow]none found[/yellow]")
 
     table.add_row("Has agent.json", "yes" if analysis.has_agent_json else "no")
 
@@ -122,7 +154,7 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
@@ -130,7 +162,10 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
             console.print(f"[yellow]Warning:[/yellow] {err}")
 
     if not analysis.suggested_entry:
-        console.print("[bold red]Error:[/bold red] No suitable entry point found.")
+        console.print(
+            "[bold red]Error:[/bold red] No suitable entry point found.\n"
+            "[dim]  Ensure your repo has Python files with top-level function definitions.[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # Save everything to ./agenteazy-output/{repo_name}/
@@ -143,7 +178,11 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
 
     # Step 3: Generate wrapper
     console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
-    wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    try:
+        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    except ValueError as e:
+        _handle_error(e, "wrapper generation")
+        raise typer.Exit(code=1)
 
     if not validate_wrapper(wrapper_code):
         console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
@@ -201,7 +240,7 @@ def deploy(
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
@@ -209,7 +248,10 @@ def deploy(
             console.print(f"[yellow]Warning:[/yellow] {err}")
 
     if not analysis.suggested_entry:
-        console.print("[bold red]Error:[/bold red] No suitable entry point found.")
+        console.print(
+            "[bold red]Error:[/bold red] No suitable entry point found.\n"
+            "[dim]  Ensure your repo has Python files with top-level function definitions.[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # Step 2: Generate agent.json + wrapper
@@ -218,7 +260,11 @@ def deploy(
 
     console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
-    wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    try:
+        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    except ValueError as e:
+        _handle_error(e, "wrapper generation")
+        raise typer.Exit(code=1)
 
     if not validate_wrapper(wrapper_code):
         console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
@@ -269,7 +315,7 @@ def deploy(
         try:
             url = deploy_to_modal(output_dir, analysis.repo_name)
         except Exception as e:
-            console.print(f"[bold red]Error deploying to Modal:[/bold red] {e}")
+            _handle_error(e, "Modal deploy")
             raise typer.Exit(code=1)
 
         # Record deploy in history
@@ -306,7 +352,12 @@ def test(
 ):
     """Test all endpoints of a running agent."""
     console.print(f"\n[bold blue]Testing agent at[/bold blue] {url}\n")
-    results = test_agent(url)
+    try:
+        results = test_agent(url)
+    except Exception as e:
+        _handle_error(e, "testing")
+        console.print("[dim]  Is the agent running? Try: agenteazy deploy <repo> --local[/dim]")
+        raise typer.Exit(code=1)
 
     all_passed = all(r["passed"] for r in results.values())
     if all_passed:
@@ -328,7 +379,10 @@ def search(
         resp = urllib.request.urlopen(url, timeout=10)
         agents = json.loads(resp.read())
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry at {registry}")
+        console.print(f"[dim]  Is the registry running? Start it with: agenteazy registry start[/dim]")
+        if _verbose:
+            console.print(f"[dim]  Detail: {e}[/dim]")
         raise typer.Exit(code=1)
 
     if not agents:
@@ -370,7 +424,10 @@ def list_agents(
         resp = urllib.request.urlopen(url, timeout=10)
         agents = json.loads(resp.read())
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry at {registry}")
+        console.print(f"[dim]  Is the registry running? Start it with: agenteazy registry start[/dim]")
+        if _verbose:
+            console.print(f"[dim]  Detail: {e}[/dim]")
         raise typer.Exit(code=1)
 
     if not agents:
