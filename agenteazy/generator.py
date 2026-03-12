@@ -71,6 +71,9 @@ def generate_agent_json(analysis, output_dir: str | None = None) -> dict:
         "verbs": ["ASK", "DO"],
     }
 
+    if entry is None:
+        config["_note"] = "No entry point detected. Edit entry.file and entry.function manually."
+
     return config
 
 

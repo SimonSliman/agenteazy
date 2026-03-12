@@ -17,7 +17,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 
-from git import Repo
+from git import Repo, GitCommandError
 
 
 @dataclass
@@ -116,7 +116,27 @@ def clone_repo(url: str, target_dir: Optional[str] = None) -> tuple[str, str]:
     if os.path.exists(target_dir):
         shutil.rmtree(target_dir)
 
-    Repo.clone_from(clone_url, target_dir, depth=1)
+    try:
+        Repo.clone_from(clone_url, target_dir, depth=1)
+    except GitCommandError as e:
+        stderr = str(e)
+        if "not found" in stderr or "404" in stderr:
+            raise RuntimeError(
+                f"Repository not found: {clone_url}\n"
+                f"Check the URL and ensure the repo is public (or you have access)."
+            ) from None
+        if "Authentication failed" in stderr or "403" in stderr:
+            raise RuntimeError(
+                f"Authentication failed for: {clone_url}\n"
+                f"This may be a private repo. Ensure your git credentials are configured."
+            ) from None
+        if "Could not resolve host" in stderr or "unable to access" in stderr.lower():
+            raise RuntimeError(
+                f"Network error cloning {clone_url}\n"
+                f"Check your internet connection and try again."
+            ) from None
+        raise RuntimeError(f"Git clone failed: {stderr}") from None
+
     return target_dir, repo_name
 
 
@@ -168,16 +188,26 @@ def read_dependencies(repo_path: str) -> tuple[list[str], dict]:
     return deps, meta
 
 
-def extract_functions(filepath: str, repo_path: str) -> list[DetectedFunction]:
+def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | None = None) -> list[DetectedFunction]:
     """
     Parse a Python file and extract top-level function definitions.
     Uses AST parsing - safe, no code execution.
+
+    If parse_errors is provided, syntax errors are appended to it instead of silently ignored.
     """
     functions = []
     try:
         source = Path(filepath).read_text(encoding="utf-8", errors="ignore")
         tree = ast.parse(source)
-    except (SyntaxError, UnicodeDecodeError):
+    except SyntaxError as e:
+        rel = os.path.relpath(filepath, repo_path)
+        if parse_errors is not None:
+            parse_errors.append(f"Syntax error in {rel}: {e.msg} (line {e.lineno})")
+        return functions
+    except UnicodeDecodeError:
+        rel = os.path.relpath(filepath, repo_path)
+        if parse_errors is not None:
+            parse_errors.append(f"Could not read {rel}: encoding error (skipped)")
         return functions
 
     rel_path = os.path.relpath(filepath, repo_path)
@@ -374,6 +404,13 @@ def analyze_repo(url: str) -> RepoAnalysis:
 
     path = Path(local_path)
 
+    # Check for empty repo
+    all_files = list(path.rglob("*"))
+    non_git_files = [f for f in all_files if ".git" not in str(f)]
+    if not non_git_files:
+        analysis.errors.append("Repository is empty — no files found")
+        return analysis
+
     # Step 2: Detect language
     analysis.language = detect_language(local_path)
 
@@ -383,7 +420,9 @@ def analyze_repo(url: str) -> RepoAnalysis:
                 f"Detected {analysis.language} — only Python is supported in v0.1"
             )
         else:
-            analysis.errors.append("Could not detect language")
+            analysis.errors.append(
+                "No Python files found. AgentEazy v0.1 only supports Python repos."
+            )
         return analysis
 
     # Step 3: Read dependencies
@@ -398,15 +437,26 @@ def analyze_repo(url: str) -> RepoAnalysis:
         for f in path.rglob("*.py")
         if ".git" not in str(f) and "__pycache__" not in str(f)
     ]
-    analysis.total_files = len(list(path.rglob("*")))
+    analysis.total_files = len(all_files)
 
+    parse_errors: list[str] = []
     all_functions = []
     for py_file in analysis.python_files:
         full_path = os.path.join(local_path, py_file)
-        funcs = extract_functions(full_path, local_path)
+        funcs = extract_functions(full_path, local_path, parse_errors=parse_errors)
         all_functions.extend(funcs)
 
+    # Report parse errors as warnings
+    for err in parse_errors:
+        analysis.errors.append(err)
+
     analysis.functions = all_functions
+
+    if not all_functions:
+        analysis.errors.append(
+            "No functions found in any Python file. "
+            "Check that your code has top-level function definitions."
+        )
 
     # Step 5: Suggest entry point
     analysis.suggested_entry = suggest_entry_point(all_functions)
