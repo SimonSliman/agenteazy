@@ -289,6 +289,49 @@ def check_agent_json(repo_path: str) -> tuple[bool, Optional[str]]:
     return False, None
 
 
+DANGEROUS_PATTERNS = [
+    "os.system",
+    "subprocess",
+    "eval(",
+    "exec(",
+    "__import__",
+    "importlib",
+    "ctypes",
+    "socket",
+]
+
+
+def check_dangerous_imports(repo_path: str) -> list[str]:
+    """Scan all Python files for potentially dangerous imports/calls.
+
+    Returns a list of warning strings describing what was found.
+    This does NOT block wrapping — it only produces warnings.
+    """
+    warnings = []
+    path = Path(repo_path)
+
+    for py_file in path.rglob("*.py"):
+        if ".git" in str(py_file) or "__pycache__" in str(py_file):
+            continue
+
+        try:
+            source = py_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+
+        rel = str(py_file.relative_to(path))
+
+        for pattern in DANGEROUS_PATTERNS:
+            for i, line in enumerate(source.splitlines(), 1):
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if pattern in line:
+                    warnings.append(f"{rel}:{i} — uses '{pattern}'")
+
+    return warnings
+
+
 def analyze_repo(url: str) -> RepoAnalysis:
     """
     Full analysis pipeline. This is the main function for Day 1.
@@ -370,5 +413,11 @@ def analyze_repo(url: str) -> RepoAnalysis:
 
     # Step 6: Check for agent.json
     analysis.has_agent_json, analysis.agent_json_path = check_agent_json(local_path)
+
+    # Step 7: Check for dangerous imports (warnings only)
+    dangerous = check_dangerous_imports(local_path)
+    if dangerous:
+        for warning in dangerous:
+            analysis.errors.append(f"Security: {warning}")
 
     return analysis
