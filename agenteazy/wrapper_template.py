@@ -94,6 +94,7 @@ def agent_info():
         "name": AGENT_CONFIG["name"],
         "description": AGENT_CONFIG["description"],
         "version": AGENT_CONFIG["version"],
+        "status": "active",
         "verbs": AGENT_CONFIG["verbs"],
     }}
 
@@ -101,7 +102,7 @@ def agent_info():
 @app.get("/health")
 def health():
     """Health check endpoint."""
-    return {{"status": "ok"}}
+    return {{"healthy": True, "status": "ok"}}
 
 
 @app.post("/ask")
@@ -111,9 +112,9 @@ def ask(body: dict = None):
     return {{
         "name": AGENT_CONFIG["name"],
         "description": AGENT_CONFIG["description"],
+        "verbs": AGENT_CONFIG["verbs"],
         "entry": AGENT_CONFIG["entry"],
         "capabilities": {{
-            "verbs": AGENT_CONFIG["verbs"],
             "args": AGENT_CONFIG["entry"]["args"],
             "docstring": func.__doc__,
         }},
@@ -123,11 +124,11 @@ def ask(body: dict = None):
 @app.post("/do")
 def do(body: dict = None):
     """Execute the entry function with the provided input."""
-    payload = body or {{}}
+    payload = (body or {{}}).get("input", body or {{}})
     func = _get_entry_func()
     try:
         result = func({call_args})
-        return {{"status": "ok", "result": result}}
+        return {{"status": "completed", "output": result}}
     except Exception as e:
         return {{"status": "error", "error": str(e)}}
 

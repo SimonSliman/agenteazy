@@ -1,6 +1,7 @@
 """AgentEazy CLI - Turn any GitHub repo into an AI agent in one command."""
 
 import os
+import shutil
 
 import typer
 from rich.console import Console
@@ -109,6 +110,12 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
     wrapper_path = os.path.join(output_dir, "wrapper.py")
     with open(wrapper_path, "w") as f:
         f.write(wrapper_code)
+
+    # Copy repo source into output_dir/repo/
+    repo_dest = os.path.join(output_dir, "repo")
+    if os.path.exists(repo_dest):
+        shutil.rmtree(repo_dest)
+    shutil.copytree(analysis.local_path, repo_dest, dirs_exist_ok=True)
 
     # Save requirements.txt
     reqs_path = os.path.join(output_dir, "requirements.txt")
