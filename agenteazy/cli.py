@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import sys
+import traceback
 import urllib.request
 import urllib.error
 from typing import Optional
@@ -16,9 +17,19 @@ from rich.table import Table
 
 from agenteazy.analyzer import analyze_repo
 from agenteazy.deployer import deploy_local, test_agent
-from agenteazy.modal_deployer import deploy_to_modal
-from agenteazy.generator import generate_agent_json, save_agent_json
+from agenteazy.modal_deployer import (
+    check_modal_auth,
+    deploy_to_modal,
+    get_agent_logs,
+    list_deployed_agents,
+    sanitize_agent_name,
+    stop_agent,
+)
+from agenteazy.generator import generate_agent_json, save_agent_json, record_deploy
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
+
+# Global verbose flag — set via callback
+_verbose = False
 
 app = typer.Typer(
     name="agenteazy",
@@ -29,6 +40,31 @@ registry_app = typer.Typer(help="Manage the agent registry server.")
 app.add_typer(registry_app, name="registry")
 
 console = Console()
+
+
+@app.callback()
+def main_callback(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show full tracebacks for debugging"),
+):
+    """AgentEazy CLI."""
+    global _verbose
+    _verbose = verbose
+
+
+def _handle_error(e: Exception, context: str = "") -> None:
+    """Print a user-friendly error message. Show traceback only with --verbose."""
+    prefix = f" during {context}" if context else ""
+    error_msg = str(e)
+
+    # Strip RuntimeError wrapper if the message is already descriptive
+    if error_msg:
+        console.print(f"[bold red]Error{prefix}:[/bold red] {error_msg}")
+    else:
+        console.print(f"[bold red]Error{prefix}:[/bold red] {type(e).__name__}")
+
+    if _verbose:
+        console.print("\n[dim]Full traceback:[/dim]")
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
 
 # ── Helper: register with registry ──────────────────────────────────
@@ -68,13 +104,14 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
         if not analysis.language:
+            console.print("\n[dim]Cannot continue without a supported language.[/dim]")
             raise typer.Exit(code=1)
 
     # Summary table
@@ -98,6 +135,8 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
             "Suggested entry",
             f"{entry.name}({', '.join(entry.args)}) in {entry.file}",
         )
+    else:
+        table.add_row("Suggested entry", "[yellow]none found[/yellow]")
 
     table.add_row("Has agent.json", "yes" if analysis.has_agent_json else "no")
 
@@ -115,7 +154,7 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
@@ -123,24 +162,31 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
             console.print(f"[yellow]Warning:[/yellow] {err}")
 
     if not analysis.suggested_entry:
-        console.print("[bold red]Error:[/bold red] No suitable entry point found.")
-        raise typer.Exit(code=1)
-
-    # Step 2: Generate agent.json
-    console.print("[dim]Step 2/3: Generating agent.json...[/dim]")
-    agent_config = generate_agent_json(analysis)
-
-    # Step 3: Generate wrapper
-    console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
-    wrapper_code = generate_wrapper(agent_config, analysis.local_path)
-
-    if not validate_wrapper(wrapper_code):
-        console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
+        console.print(
+            "[bold red]Error:[/bold red] No suitable entry point found.\n"
+            "[dim]  Ensure your repo has Python files with top-level function definitions.[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # Save everything to ./agenteazy-output/{repo_name}/
     output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
     os.makedirs(output_dir, exist_ok=True)
+
+    # Step 2: Generate agent.json (with version auto-increment)
+    console.print("[dim]Step 2/3: Generating agent.json...[/dim]")
+    agent_config = generate_agent_json(analysis, output_dir=output_dir)
+
+    # Step 3: Generate wrapper
+    console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
+    try:
+        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    except ValueError as e:
+        _handle_error(e, "wrapper generation")
+        raise typer.Exit(code=1)
+
+    if not validate_wrapper(wrapper_code):
+        console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
+        raise typer.Exit(code=1)
 
     # Save agent.json
     agent_path = save_agent_json(agent_config, output_dir)
@@ -194,7 +240,7 @@ def deploy(
     try:
         analysis = analyze_repo(repo_url)
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] {e}")
+        _handle_error(e, "analysis")
         raise typer.Exit(code=1)
 
     if analysis.errors:
@@ -202,20 +248,27 @@ def deploy(
             console.print(f"[yellow]Warning:[/yellow] {err}")
 
     if not analysis.suggested_entry:
-        console.print("[bold red]Error:[/bold red] No suitable entry point found.")
+        console.print(
+            "[bold red]Error:[/bold red] No suitable entry point found.\n"
+            "[dim]  Ensure your repo has Python files with top-level function definitions.[/dim]"
+        )
         raise typer.Exit(code=1)
 
     # Step 2: Generate agent.json + wrapper
+    output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
+    os.makedirs(output_dir, exist_ok=True)
+
     console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
-    agent_config = generate_agent_json(analysis)
-    wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    agent_config = generate_agent_json(analysis, output_dir=output_dir)
+    try:
+        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+    except ValueError as e:
+        _handle_error(e, "wrapper generation")
+        raise typer.Exit(code=1)
 
     if not validate_wrapper(wrapper_code):
         console.print("[bold red]Error:[/bold red] Generated wrapper has syntax errors.")
         raise typer.Exit(code=1)
-
-    output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
-    os.makedirs(output_dir, exist_ok=True)
 
     save_agent_json(agent_config, output_dir)
 
@@ -262,13 +315,22 @@ def deploy(
         try:
             url = deploy_to_modal(output_dir, analysis.repo_name)
         except Exception as e:
-            console.print(f"[bold red]Error deploying to Modal:[/bold red] {e}")
+            _handle_error(e, "Modal deploy")
             raise typer.Exit(code=1)
+
+        # Record deploy in history
+        record_deploy(
+            name=agent_config["name"],
+            version=agent_config["version"],
+            url=url,
+            modal_app_name=analysis.repo_name,
+        )
 
         console.print()
         console.print(Panel.fit(
             f"[bold green]Deployed![/bold green] Agent is live at:\n\n"
             f"  [cyan]{url}[/cyan]\n\n"
+            f"Version: {agent_config['version']}\n\n"
             f"Endpoints:\n"
             f"  GET  {url}/\n"
             f"  GET  {url}/health\n"
@@ -290,7 +352,12 @@ def test(
 ):
     """Test all endpoints of a running agent."""
     console.print(f"\n[bold blue]Testing agent at[/bold blue] {url}\n")
-    results = test_agent(url)
+    try:
+        results = test_agent(url)
+    except Exception as e:
+        _handle_error(e, "testing")
+        console.print("[dim]  Is the agent running? Try: agenteazy deploy <repo> --local[/dim]")
+        raise typer.Exit(code=1)
 
     all_passed = all(r["passed"] for r in results.values())
     if all_passed:
@@ -312,7 +379,10 @@ def search(
         resp = urllib.request.urlopen(url, timeout=10)
         agents = json.loads(resp.read())
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry at {registry}")
+        console.print(f"[dim]  Is the registry running? Start it with: agenteazy registry start[/dim]")
+        if _verbose:
+            console.print(f"[dim]  Detail: {e}[/dim]")
         raise typer.Exit(code=1)
 
     if not agents:
@@ -354,7 +424,10 @@ def list_agents(
         resp = urllib.request.urlopen(url, timeout=10)
         agents = json.loads(resp.read())
     except Exception as e:
-        console.print(f"[bold red]Error:[/bold red] Could not reach registry: {e}")
+        console.print(f"[bold red]Error:[/bold red] Could not reach registry at {registry}")
+        console.print(f"[dim]  Is the registry running? Start it with: agenteazy registry start[/dim]")
+        if _verbose:
+            console.print(f"[dim]  Detail: {e}[/dim]")
         raise typer.Exit(code=1)
 
     if not agents:
@@ -386,6 +459,253 @@ def list_agents(
     console.print()
     console.print(table)
     console.print()
+
+
+# ── Modal management commands ────────────────────────────────────────
+
+@app.command()
+def status():
+    """Show Modal auth status and all deployed agents."""
+    console.print()
+
+    # Auth check
+    authenticated = check_modal_auth()
+    if authenticated:
+        console.print("[bold green]Modal auth:[/bold green] authenticated")
+    else:
+        console.print("[bold red]Modal auth:[/bold red] not authenticated")
+        console.print("[dim]Run 'modal setup' to authenticate.[/dim]")
+        console.print()
+        raise typer.Exit(code=1)
+
+    # List deployed agents
+    console.print()
+    try:
+        agents = list_deployed_agents()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    if not agents:
+        console.print("[yellow]No deployed agents found.[/yellow]\n")
+        return
+
+    table = Table(title=f"Deployed Modal Agents ({len(agents)})")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("App ID", style="dim")
+    table.add_column("State", style="bold")
+
+    for a in agents:
+        state = a.get("state", "unknown")
+        state_style = "green" if state.lower() in ("deployed", "running") else "yellow"
+        table.add_row(
+            a.get("name", ""),
+            a.get("app_id", ""),
+            f"[{state_style}]{state}[/{state_style}]",
+        )
+
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def stop(
+    name: str = typer.Argument(..., help="Name of the Modal app to stop"),
+):
+    """Stop a deployed Modal agent."""
+    console.print(f"\n[bold blue]Stopping[/bold blue] '{name}'...\n")
+
+    if stop_agent(name):
+        console.print(f"[bold green]Stopped[/bold green] '{name}' successfully.\n")
+    else:
+        console.print(f"[bold red]Error:[/bold red] Failed to stop '{name}'. Check the app name and try again.\n")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def logs(
+    name: str = typer.Argument(..., help="Name of the Modal app to get logs for"),
+):
+    """Show recent logs for a deployed Modal agent."""
+    console.print(f"\n[bold blue]Logs for[/bold blue] '{name}':\n")
+
+    try:
+        log_output = get_agent_logs(name)
+        console.print(log_output)
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+
+# ── Batch and cleanup commands ────────────────────────────────────────
+
+@app.command(name="batch-deploy")
+def batch_deploy(
+    repos_dir: str = typer.Argument(..., help="Directory containing repo subdirectories"),
+    local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register"),
+):
+    """Wrap and deploy all repos in a directory sequentially."""
+    repos_dir = os.path.abspath(repos_dir)
+    if not os.path.isdir(repos_dir):
+        console.print(f"[bold red]Error:[/bold red] '{repos_dir}' is not a directory.")
+        raise typer.Exit(code=1)
+
+    subdirs = sorted([
+        d for d in os.listdir(repos_dir)
+        if os.path.isdir(os.path.join(repos_dir, d)) and not d.startswith(".")
+    ])
+
+    if not subdirs:
+        console.print(f"[yellow]No subdirectories found in[/yellow] {repos_dir}")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold blue]Batch deploy:[/bold blue] {len(subdirs)} repos in {repos_dir}\n")
+
+    results = []
+    for repo_name in subdirs:
+        repo_path = os.path.join(repos_dir, repo_name)
+        console.print(f"\n[bold]{'─' * 50}[/bold]")
+        console.print(f"[bold cyan]Processing:[/bold cyan] {repo_name}")
+
+        try:
+            analysis = analyze_repo(repo_path)
+        except Exception as e:
+            results.append({"name": repo_name, "status": "error", "detail": str(e)})
+            console.print(f"  [red]Analysis failed:[/red] {e}")
+            continue
+
+        if not analysis.suggested_entry:
+            results.append({"name": repo_name, "status": "skipped", "detail": "No entry point found"})
+            console.print(f"  [yellow]Skipped:[/yellow] no entry point found")
+            continue
+
+        output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+        agent_config = generate_agent_json(analysis, output_dir=output_dir)
+        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
+
+        if not validate_wrapper(wrapper_code):
+            results.append({"name": repo_name, "status": "error", "detail": "Wrapper syntax error"})
+            console.print(f"  [red]Error:[/red] generated wrapper has syntax errors")
+            continue
+
+        save_agent_json(agent_config, output_dir)
+        with open(os.path.join(output_dir, "wrapper.py"), "w") as f:
+            f.write(wrapper_code)
+
+        repo_dest = os.path.join(output_dir, "repo")
+        if os.path.exists(repo_dest):
+            shutil.rmtree(repo_dest)
+        shutil.copytree(analysis.local_path, repo_dest, dirs_exist_ok=True)
+
+        reqs_path = os.path.join(output_dir, "requirements.txt")
+        wrapper_deps = ["fastapi>=0.100.0", "uvicorn>=0.23.0"]
+        all_deps = analysis.dependencies + wrapper_deps
+        with open(reqs_path, "w") as f:
+            f.write("\n".join(all_deps) + "\n")
+
+        if local:
+            results.append({
+                "name": repo_name,
+                "status": "wrapped",
+                "detail": f"Output: {output_dir}",
+                "version": agent_config["version"],
+            })
+            console.print(f"  [green]Wrapped[/green] → {output_dir}")
+        else:
+            try:
+                url = deploy_to_modal(output_dir, analysis.repo_name)
+                record_deploy(
+                    name=agent_config["name"],
+                    version=agent_config["version"],
+                    url=url,
+                    modal_app_name=analysis.repo_name,
+                )
+                results.append({
+                    "name": repo_name,
+                    "status": "deployed",
+                    "detail": url,
+                    "version": agent_config["version"],
+                })
+                console.print(f"  [green]Deployed[/green] → {url}")
+
+                if registry:
+                    _register_with_registry(registry, agent_config, url, analysis)
+            except Exception as e:
+                results.append({"name": repo_name, "status": "error", "detail": str(e)})
+                console.print(f"  [red]Deploy failed:[/red] {e}")
+
+    # Print summary table
+    console.print(f"\n[bold]{'─' * 50}[/bold]")
+    table = Table(title=f"Batch Deploy Summary ({len(results)} repos)")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("Status")
+    table.add_column("Version")
+    table.add_column("Detail", style="dim")
+
+    for r in results:
+        status = r["status"]
+        if status == "deployed":
+            status_display = "[green]deployed[/green]"
+        elif status == "wrapped":
+            status_display = "[blue]wrapped[/blue]"
+        elif status == "skipped":
+            status_display = "[yellow]skipped[/yellow]"
+        else:
+            status_display = "[red]error[/red]"
+        table.add_row(r["name"], status_display, r.get("version", "-"), r.get("detail", ""))
+
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def cleanup(
+    all_apps: bool = typer.Option(False, "--all", help="Remove all Modal apps without prompting"),
+):
+    """List deployed Modal apps and optionally remove them."""
+    console.print()
+
+    if not check_modal_auth():
+        console.print("[bold red]Modal auth:[/bold red] not authenticated")
+        console.print("[dim]Run 'modal setup' to authenticate.[/dim]\n")
+        raise typer.Exit(code=1)
+
+    try:
+        agents = list_deployed_agents()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    if not agents:
+        console.print("[yellow]No deployed Modal apps found.[/yellow]\n")
+        return
+
+    table = Table(title=f"Deployed Modal Apps ({len(agents)})")
+    table.add_column("#", style="dim")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("App ID", style="dim")
+    table.add_column("State")
+
+    for i, a in enumerate(agents, 1):
+        table.add_row(str(i), a["name"], a.get("app_id", ""), a.get("state", "unknown"))
+
+    console.print(table)
+    console.print()
+
+    if all_apps:
+        console.print("[bold red]Removing all Modal apps...[/bold red]\n")
+        for a in agents:
+            name = a["name"]
+            if stop_agent(name):
+                console.print(f"  [green]Stopped[/green] {name}")
+            else:
+                console.print(f"  [red]Failed to stop[/red] {name}")
+        console.print()
+    else:
+        console.print("[dim]Use --all to remove all apps, or use 'agenteazy stop <name>' individually.[/dim]\n")
 
 
 # ── Registry subcommands ─────────────────────────────────────────────
