@@ -16,7 +16,13 @@ from rich.table import Table
 
 from agenteazy.analyzer import analyze_repo
 from agenteazy.deployer import deploy_local, test_agent
-from agenteazy.modal_deployer import deploy_to_modal
+from agenteazy.modal_deployer import (
+    check_modal_auth,
+    deploy_to_modal,
+    get_agent_logs,
+    list_deployed_agents,
+    stop_agent,
+)
 from agenteazy.generator import generate_agent_json, save_agent_json
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
 
@@ -386,6 +392,82 @@ def list_agents(
     console.print()
     console.print(table)
     console.print()
+
+
+# ── Modal management commands ────────────────────────────────────────
+
+@app.command()
+def status():
+    """Show Modal auth status and all deployed agents."""
+    console.print()
+
+    # Auth check
+    authenticated = check_modal_auth()
+    if authenticated:
+        console.print("[bold green]Modal auth:[/bold green] authenticated")
+    else:
+        console.print("[bold red]Modal auth:[/bold red] not authenticated")
+        console.print("[dim]Run 'modal setup' to authenticate.[/dim]")
+        console.print()
+        raise typer.Exit(code=1)
+
+    # List deployed agents
+    console.print()
+    try:
+        agents = list_deployed_agents()
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+
+    if not agents:
+        console.print("[yellow]No deployed agents found.[/yellow]\n")
+        return
+
+    table = Table(title=f"Deployed Modal Agents ({len(agents)})")
+    table.add_column("Name", style="bold cyan")
+    table.add_column("App ID", style="dim")
+    table.add_column("State", style="bold")
+
+    for a in agents:
+        state = a.get("state", "unknown")
+        state_style = "green" if state.lower() in ("deployed", "running") else "yellow"
+        table.add_row(
+            a.get("name", ""),
+            a.get("app_id", ""),
+            f"[{state_style}]{state}[/{state_style}]",
+        )
+
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def stop(
+    name: str = typer.Argument(..., help="Name of the Modal app to stop"),
+):
+    """Stop a deployed Modal agent."""
+    console.print(f"\n[bold blue]Stopping[/bold blue] '{name}'...\n")
+
+    if stop_agent(name):
+        console.print(f"[bold green]Stopped[/bold green] '{name}' successfully.\n")
+    else:
+        console.print(f"[bold red]Error:[/bold red] Failed to stop '{name}'. Check the app name and try again.\n")
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def logs(
+    name: str = typer.Argument(..., help="Name of the Modal app to get logs for"),
+):
+    """Show recent logs for a deployed Modal agent."""
+    console.print(f"\n[bold blue]Logs for[/bold blue] '{name}':\n")
+
+    try:
+        log_output = get_agent_logs(name)
+        console.print(log_output)
+    except RuntimeError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
 
 
 # ── Registry subcommands ─────────────────────────────────────────────
