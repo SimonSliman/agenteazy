@@ -1,6 +1,7 @@
 """AgentEazy Registry — central directory for wrapped agents."""
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -192,4 +193,5 @@ def heartbeat(name: str):
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    port = int(os.environ.get("REGISTRY_PORT", "8001"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
