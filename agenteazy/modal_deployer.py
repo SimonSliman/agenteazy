@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def check_modal_auth() -> bool:
@@ -150,8 +151,11 @@ def deploy_to_modal(output_dir: str, agent_name: str) -> str:
     """
     # Check authentication before attempting deploy
     if not check_modal_auth():
-        print("Modal not authenticated. Run: modal setup")
-        sys.exit(1)
+        raise RuntimeError(
+            "Modal not authenticated.\n"
+            "  Fix: Run 'modal setup' to configure your token.\n"
+            "  Tokens are stored in ~/.modal.toml"
+        )
 
     output_dir = os.path.abspath(output_dir)
 
@@ -211,15 +215,51 @@ def deploy_to_modal(output_dir: str, agent_name: str) -> str:
 
     try:
         print(f"\nDeploying '{modal_app_name}' to Modal...")
-        result = subprocess.run(
-            [sys.executable, "-m", "modal", "deploy", deploy_script_path],
-            capture_output=True,
-            text=True,
-        )
+
+        # Try deploy with one retry on network timeout
+        result = None
+        for attempt in range(2):
+            try:
+                result = subprocess.run(
+                    [sys.executable, "-m", "modal", "deploy", deploy_script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=300,
+                )
+                break
+            except subprocess.TimeoutExpired:
+                if attempt == 0:
+                    print("Deploy timed out, retrying once...")
+                    time.sleep(2)
+                else:
+                    raise RuntimeError(
+                        "Modal deploy timed out after 2 attempts.\n"
+                        "  Check your network connection and try again."
+                    )
 
         if result.returncode != 0:
+            combined = result.stdout + result.stderr
+            # Detect rate limiting
+            if "rate limit" in combined.lower() or "429" in combined or "limit" in combined.lower() and "free" in combined.lower():
+                raise RuntimeError(
+                    "Modal free tier limit reached.\n"
+                    "  Fix: Stop unused agents with: agenteazy cleanup --all\n"
+                    "  Or upgrade your Modal plan at modal.com"
+                )
+            # Detect auth issues
+            if "Token missing" in combined or "Could not authenticate" in combined:
+                raise RuntimeError(
+                    "Modal authentication failed during deploy.\n"
+                    "  Fix: Run 'modal setup' to refresh your token."
+                )
+            # Generic failure with stderr
+            error_msg = result.stderr.strip() or result.stdout.strip()
             raise RuntimeError(
-                f"Modal deploy failed:\nstdout: {result.stdout}\nstderr: {result.stderr}"
+                f"Modal deploy failed:\n{error_msg}\n\n"
+                f"  Suggestions:\n"
+                f"  - Check that 'modal' is installed: pip install modal\n"
+                f"  - Verify auth: modal profile current\n"
+                f"  - Check Modal status: modal.com/status"
             )
 
         # Parse the URL from modal deploy output
