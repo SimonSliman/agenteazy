@@ -40,9 +40,11 @@ import sys
 import os
 import importlib.util
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 import uvicorn
+
+MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
 
 
 # --- Agent config ---
@@ -122,8 +124,13 @@ def ask(body: dict = None):
 
 
 @app.post("/do")
-def do(body: dict = None):
+async def do(request: Request, body: dict = None):
     """Execute the entry function with the provided input."""
+    # Input size check: reject bodies > 1 MB
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+
     payload = (body or {{}}).get("input", body or {{}})
     func = _get_entry_func()
     try:

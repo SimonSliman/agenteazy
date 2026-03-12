@@ -221,10 +221,12 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install({deps_repr})
     .add_local_dir({output_dir_repr}, remote_path="/app")
+    .env({{"PYTHONDONTWRITEBYTECODE": "1"}})
+    .workdir("/app")
 )
 
 
-@app.function(image=image)
+@app.function(image=image, timeout=30, memory=512, cpu=1.0)
 @modal.asgi_app()
 def serve():
     import importlib.util
