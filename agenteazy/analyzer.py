@@ -293,30 +293,41 @@ def analyze_repo(url: str) -> RepoAnalysis:
     """
     Full analysis pipeline. This is the main function for Day 1.
 
-    1. Clone the repo
+    Accepts a GitHub URL/shorthand OR a local directory path.
+
+    1. Clone the repo (or use local path)
     2. Detect language
     3. Read dependencies
     4. Find functions
     5. Suggest entry point
     6. Check for agent.json
     """
-    # Step 1: Clone
-    try:
-        local_path, repo_name = clone_repo(url)
-    except Exception as e:
+    # Step 1: Clone or use local path
+    if os.path.isdir(url):
+        local_path = os.path.abspath(url)
+        repo_name = os.path.basename(local_path)
         analysis = RepoAnalysis(
             repo_url=url,
-            repo_name=url.split("/")[-1],
-            local_path="",
+            repo_name=repo_name,
+            local_path=local_path,
         )
-        analysis.errors.append(f"Clone failed: {e}")
-        return analysis
+    else:
+        try:
+            local_path, repo_name = clone_repo(url)
+        except Exception as e:
+            analysis = RepoAnalysis(
+                repo_url=url,
+                repo_name=url.split("/")[-1],
+                local_path="",
+            )
+            analysis.errors.append(f"Clone failed: {e}")
+            return analysis
 
-    analysis = RepoAnalysis(
-        repo_url=url,
-        repo_name=repo_name,
-        local_path=local_path,
-    )
+        analysis = RepoAnalysis(
+            repo_url=url,
+            repo_name=repo_name,
+            local_path=local_path,
+        )
 
     path = Path(local_path)
 
