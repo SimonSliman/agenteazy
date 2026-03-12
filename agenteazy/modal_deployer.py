@@ -115,6 +115,28 @@ def get_agent_logs(name: str) -> str:
     return result.stdout
 
 
+def sanitize_agent_name(name: str) -> str:
+    """Convert any repo/agent name to a valid Modal app name.
+
+    Rules: lowercase, alphanumeric + hyphens only, no leading/trailing hyphens,
+    collapse consecutive hyphens.
+    """
+    sanitized = re.sub(r"[^a-z0-9-]", "-", name.lower())
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    return sanitized.strip("-")
+
+
+def _find_unique_modal_name(base_name: str, existing_names: list[str]) -> str:
+    """Find a unique Modal app name by appending -v2, -v3, etc. if needed."""
+    if base_name not in existing_names:
+        return base_name
+
+    version = 2
+    while f"{base_name}-v{version}" in existing_names:
+        version += 1
+    return f"{base_name}-v{version}"
+
+
 def deploy_to_modal(output_dir: str, agent_name: str) -> str:
     """
     Deploy a wrapped agent to Modal as a serverless ASGI endpoint.
@@ -163,8 +185,14 @@ def deploy_to_modal(output_dir: str, agent_name: str) -> str:
     if "uvicorn" not in dep_names:
         dependencies.append("uvicorn>=0.23.0")
 
-    # Sanitize app name for Modal (lowercase, alphanumeric + hyphens)
-    modal_app_name = re.sub(r"[^a-z0-9-]", "-", agent_name.lower()).strip("-")
+    # Sanitize and deduplicate app name
+    modal_app_name = sanitize_agent_name(agent_name)
+    try:
+        existing = list_deployed_agents()
+        existing_names = [a["name"] for a in existing]
+        modal_app_name = _find_unique_modal_name(modal_app_name, existing_names)
+    except RuntimeError:
+        pass  # If we can't list apps, proceed with the base name
 
     # Generate the Modal deploy script
     # We use repr() to safely embed the dependencies list and paths
