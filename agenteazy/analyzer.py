@@ -305,7 +305,7 @@ def analyze_repo(url: str) -> RepoAnalysis:
     # Step 1: Clone or use local path
     if os.path.isdir(url):
         local_path = os.path.abspath(url)
-        repo_name = os.path.basename(local_path)
+        repo_name = os.path.basename(local_path.rstrip("/"))
         analysis = RepoAnalysis(
             repo_url=url,
             repo_name=repo_name,
