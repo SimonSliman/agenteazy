@@ -173,6 +173,29 @@ def _invalidate_cache(agent_name: str) -> None:
     _agent_modules.pop(agent_name, None)
 
 
+def _merge_context(func, kwargs: dict, ctx: dict) -> dict:
+    """Merge shared context into kwargs, only including keys the function accepts.
+
+    Uses inspect.signature to find accepted parameter names and **kwargs.
+    """
+    import inspect
+    merged = dict(kwargs)
+    sig = inspect.signature(func)
+    param_names = set(sig.parameters.keys())
+    has_var_keyword = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+    )
+    if has_var_keyword:
+        # Function accepts **kwargs — pass all context keys
+        merged.update(ctx)
+    else:
+        # Only pass context keys that match explicit parameter names
+        for key, value in ctx.items():
+            if key in param_names and key not in merged:
+                merged[key] = value
+    return merged
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────
 
 
@@ -250,22 +273,18 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
     # Build kwargs from the entry args
     kwargs = {a: payload.get(a) for a in entry_args} if entry_args else {}
 
-    # Inject shared context if function accepts **kwargs
+    # Merge shared context into kwargs (only keys the function accepts)
     ctx = _agent_context.get(agent_name)
-    if ctx:
-        import inspect
-        sig = inspect.signature(func)
-        for p in sig.parameters.values():
-            if p.kind == inspect.Parameter.VAR_KEYWORD:
-                kwargs["_context"] = ctx
-                break
+    kwargs_with_ctx = _merge_context(func, kwargs, ctx) if ctx else kwargs
 
     try:
-        if kwargs:
-            future = _executor.submit(func, **kwargs)
-        else:
-            future = _executor.submit(func)
-        result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+        try:
+            future = _executor.submit(func, **kwargs_with_ctx) if kwargs_with_ctx else _executor.submit(func)
+            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+        except TypeError:
+            # Context kwargs not accepted — retry without context
+            future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
+            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
         return {"status": "completed", "output": result}
     except FuturesTimeoutError:
         future.cancel()
@@ -347,22 +366,19 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
         # Accept both {"data": {...}} and {"input": {...}} payload formats
         data = payload.get("data") or payload.get("input") or {}
         kwargs = {a: data.get(a) for a in entry_args} if entry_args else {}
-        # Inject shared context if function accepts **kwargs
+
+        # Merge shared context into kwargs (only keys the function accepts)
         ctx = _agent_context.get(agent_name)
-        if ctx:
-            import inspect
-            sig = inspect.signature(func)
-            for p in sig.parameters.values():
-                if p.kind == inspect.Parameter.VAR_KEYWORD:
-                    kwargs["_context"] = ctx
-                    break
+        kwargs_with_ctx = _merge_context(func, kwargs, ctx) if ctx else kwargs
 
         try:
-            if kwargs:
-                future = _executor.submit(func, **kwargs)
-            else:
-                future = _executor.submit(func)
-            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+            try:
+                future = _executor.submit(func, **kwargs_with_ctx) if kwargs_with_ctx else _executor.submit(func)
+                result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+            except TypeError:
+                # Context kwargs not accepted — retry without context
+                future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
+                result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
             return {"status": "completed", "output": result}
         except FuturesTimeoutError:
             future.cancel()
@@ -375,7 +391,7 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
             )
 
     if verb == "FIND":
-        registry_url = os.environ.get("AGENTEAZY_REGISTRY_URL") or _get_registry_url()
+        registry_url = _get_registry_url()
         if not registry_url:
             return {"status": "failed", "error": "No registry URL configured"}
         query = payload.get("data", "")
