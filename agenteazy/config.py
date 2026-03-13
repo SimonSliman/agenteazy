@@ -38,3 +38,15 @@ def set_registry_url(url: str) -> None:
     cfg = load_config()
     cfg["registry_url"] = url
     save_config(cfg)
+
+
+def get_gateway_url() -> str | None:
+    """Return the stored gateway URL, or None."""
+    return load_config().get("gateway_url")
+
+
+def set_gateway_url(url: str) -> None:
+    """Store the gateway URL."""
+    cfg = load_config()
+    cfg["gateway_url"] = url
+    save_config(cfg)
