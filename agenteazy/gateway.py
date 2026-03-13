@@ -289,22 +289,22 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 @app.post("/agent/{agent_name}/")
 async def agent_universal(agent_name: str, request: Request, body: dict = None):
     """Universal AgentLang endpoint — route by verb."""
-    _refresh_volume()
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
-
-    body = body or {}
-    verb = body.get("verb", "").upper()
-    payload = body.get("payload", {})
-
-    if not validate_verb(verb):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
-        )
-
     try:
+        _refresh_volume()
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+
+        body = body or {}
+        verb = body.get("verb", "").upper()
+        payload = body.get("payload", {})
+
+        if not validate_verb(verb):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
+            )
+
         result = _handle_verb(agent_name, verb, payload)
         _log_call(agent_name, verb, "success")
         return result
@@ -312,7 +312,8 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         _log_call(agent_name, verb, "failed")
         raise
     except Exception as e:
-        _log_call(agent_name, verb, "failed")
+        verb_val = body.get("verb", "") if isinstance(body, dict) else ""
+        _log_call(agent_name, verb_val.upper() if verb_val else "UNKNOWN", "failed")
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
         return JSONResponse(
@@ -340,8 +341,8 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
     if verb == "DO":
         func, config = _load_agent_func(agent_name)
         entry_args = config["entry"]["args"]
-        data = payload.get("data", {})
-        task = payload.get("task")
+        # Accept both {"data": {...}} and {"input": {...}} payload formats
+        data = payload.get("data") or payload.get("input") or {}
         kwargs = {a: data.get(a) for a in entry_args} if entry_args else {}
         # Inject shared context if function accepts **kwargs
         ctx = _agent_context.get(agent_name)
@@ -390,7 +391,7 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
         return {"status": "completed", "config": config, "recent_calls": log}
 
     if verb == "SHARE":
-        data = payload.get("data", {})
+        data = payload.get("data") or payload.get("input") or {}
         if agent_name not in _agent_context:
             _agent_context[agent_name] = {}
         _agent_context[agent_name].update(data)
