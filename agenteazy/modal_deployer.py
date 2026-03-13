@@ -295,7 +295,7 @@ app = modal.App("{modal_app_name}")
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install({deps_repr})
-    .add_local_dir({output_dir_repr}, remote_path="/app")
+    .add_local_dir({output_dir_repr}, remote_path="/app", copy=True)
     .env({{"PYTHONDONTWRITEBYTECODE": "1"}})
     .workdir("/app")
 )
