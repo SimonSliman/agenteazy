@@ -24,35 +24,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# ── Inlined from agenteazy.agentlang (gateway must be self-contained for Modal) ──
-VERBS = {
-    "ASK": {"description": "Query without changing state", "http_equiv": "GET", "requires_auth": False},
-    "DO": {"description": "Execute a task, may change state", "http_equiv": "POST", "requires_auth": False},
-    "FIND": {"description": "Search for agents or data", "http_equiv": "GET", "requires_auth": False},
-    "PAY": {"description": "Transfer credits for service", "http_equiv": "POST", "requires_auth": True},
-    "WATCH": {"description": "Subscribe to changes", "http_equiv": "POST", "requires_auth": False},
-    "STOP": {"description": "Halt current task", "http_equiv": "DELETE", "requires_auth": False},
-    "TRUST": {"description": "Establish authenticated session", "http_equiv": "POST", "requires_auth": False},
-    "SHARE": {"description": "Pass context between agents", "http_equiv": "POST", "requires_auth": False},
-    "LEARN": {"description": "Ingest new knowledge", "http_equiv": "POST", "requires_auth": True},
-    "REPORT": {"description": "Get audit log of actions", "http_equiv": "GET", "requires_auth": False},
-}
-VALID_VERBS = list(VERBS.keys())
+VALID_VERBS = ["ASK", "DO", "FIND", "PAY", "WATCH", "STOP", "TRUST", "SHARE", "LEARN", "REPORT"]
 
 
-def validate_verb(verb: str) -> bool:
-    """Check whether the given verb is one of the 10 AgentLang verbs."""
-    return verb.upper() in VERBS
+def validate_verb(verb):
+    return verb.upper() in VALID_VERBS
 
 
-# ── Inlined from agenteazy.config (gateway must be self-contained for Modal) ──
-def _get_registry_url() -> str | None:
-    """Return the stored registry URL from ~/.agenteazy/config.json, or None."""
+def _get_registry_url():
     import json as _json
-    from pathlib import Path as _Path
-    config_file = _Path.home() / ".agenteazy" / "config.json"
-    if not config_file.is_file():
-        return None
+    config_file = os.path.expanduser("~/.agenteazy/config.json")
     try:
         with open(config_file) as f:
             return _json.load(f).get("registry_url")
