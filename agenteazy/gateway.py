@@ -12,12 +12,19 @@ import json
 import os
 import sys
 import traceback
+import urllib.request
+import urllib.parse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from datetime import datetime, timezone
+from uuid import uuid4
 
 import modal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+
+from agenteazy.agentlang import VALID_VERBS, validate_verb
 
 AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
 
@@ -39,6 +46,24 @@ _executor = ThreadPoolExecutor(max_workers=8)
 # Cache loaded agent modules and configs to avoid re-loading on every request
 _agent_configs: dict[str, dict] = {}
 _agent_modules: dict[str, object] = {}
+
+# Call logger — last 50 calls per agent
+_call_log: dict[str, deque] = {}
+MAX_CALL_LOG = 50
+
+# Per-agent shared context store
+_agent_context: dict[str, dict] = {}
+
+
+def _log_call(agent_name: str, verb: str, status: str) -> None:
+    """Append a call record to the agent's log (max 50 entries)."""
+    if agent_name not in _call_log:
+        _call_log[agent_name] = deque(maxlen=MAX_CALL_LOG)
+    _call_log[agent_name].append({
+        "verb": verb,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+    })
 
 app = FastAPI(title="AgentEazy Gateway", description="Single gateway routing all agent requests")
 
@@ -207,6 +232,16 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
     # Build kwargs from the entry args
     kwargs = {a: payload.get(a) for a in entry_args} if entry_args else {}
 
+    # Inject shared context if function accepts **kwargs
+    ctx = _agent_context.get(agent_name)
+    if ctx:
+        import inspect
+        sig = inspect.signature(func)
+        for p in sig.parameters.values():
+            if p.kind == inspect.Parameter.VAR_KEYWORD:
+                kwargs["_context"] = ctx
+                break
+
     try:
         if kwargs:
             future = _executor.submit(func, **kwargs)
@@ -234,6 +269,133 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
                 "traceback": limited_tb,
             },
         )
+
+
+@app.post("/agent/{agent_name}/")
+async def agent_universal(agent_name: str, request: Request, body: dict = None):
+    """Universal AgentLang endpoint — route by verb."""
+    _refresh_volume()
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+
+    body = body or {}
+    verb = body.get("verb", "").upper()
+    payload = body.get("payload", {})
+
+    if not validate_verb(verb):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
+        )
+
+    try:
+        result = _handle_verb(agent_name, verb, payload)
+        _log_call(agent_name, verb, "success")
+        return result
+    except HTTPException:
+        _log_call(agent_name, verb, "failed")
+        raise
+    except Exception as e:
+        _log_call(agent_name, verb, "failed")
+        tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
+        limited_tb = "".join(tb_lines[-5:])
+        return JSONResponse(
+            status_code=500,
+            content={"status": "failed", "error": str(e), "traceback": limited_tb},
+        )
+
+
+def _handle_verb(agent_name: str, verb: str, payload: dict):
+    """Dispatch a verb to the appropriate handler."""
+
+    if verb == "ASK":
+        func, config = _load_agent_func(agent_name)
+        return {
+            "name": config.get("name", agent_name),
+            "description": config.get("description", ""),
+            "verbs": config.get("verbs", []),
+            "entry": config.get("entry", {}),
+            "capabilities": {
+                "args": config["entry"]["args"],
+                "docstring": func.__doc__,
+            },
+        }
+
+    if verb == "DO":
+        func, config = _load_agent_func(agent_name)
+        entry_args = config["entry"]["args"]
+        data = payload.get("data", {})
+        task = payload.get("task")
+        kwargs = {a: data.get(a) for a in entry_args} if entry_args else {}
+        # Inject shared context if function accepts **kwargs
+        ctx = _agent_context.get(agent_name)
+        if ctx:
+            import inspect
+            sig = inspect.signature(func)
+            for p in sig.parameters.values():
+                if p.kind == inspect.Parameter.VAR_KEYWORD:
+                    kwargs["_context"] = ctx
+                    break
+
+        try:
+            if kwargs:
+                future = _executor.submit(func, **kwargs)
+            else:
+                future = _executor.submit(func)
+            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+            return {"status": "completed", "output": result}
+        except FuturesTimeoutError:
+            future.cancel()
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status": "timeout",
+                    "error": f"Function timed out after {FUNCTION_TIMEOUT_SECONDS} seconds",
+                },
+            )
+
+    if verb == "FIND":
+        from agenteazy.config import get_registry_url
+        registry_url = os.environ.get("AGENTEAZY_REGISTRY_URL") or get_registry_url()
+        if not registry_url:
+            return {"status": "failed", "error": "No registry URL configured"}
+        query = payload.get("data", "")
+        search_url = f"{registry_url.rstrip('/')}/registry/search?q={urllib.parse.quote(str(query))}"
+        try:
+            req = urllib.request.Request(search_url)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                results = json.loads(resp.read().decode())
+            return {"status": "completed", "results": results}
+        except Exception as e:
+            return {"status": "failed", "error": f"Registry search failed: {e}"}
+
+    if verb == "REPORT":
+        config = _load_agent_config(agent_name)
+        log = list(_call_log.get(agent_name, []))
+        return {"status": "completed", "config": config, "recent_calls": log}
+
+    if verb == "SHARE":
+        data = payload.get("data", {})
+        if agent_name not in _agent_context:
+            _agent_context[agent_name] = {}
+        _agent_context[agent_name].update(data)
+        return {"status": "received", "context_keys": list(_agent_context[agent_name].keys())}
+
+    if verb == "STOP":
+        return {"status": "acknowledged", "message": "No running tasks to stop"}
+
+    if verb == "WATCH":
+        return {"status": "acknowledged", "subscription_id": str(uuid4()), "message": "Webhooks coming soon"}
+
+    if verb == "PAY":
+        return {"status": "acknowledged", "message": "TollBooth not yet active"}
+
+    if verb == "TRUST":
+        return {"status": "acknowledged", "message": "AgentPass not yet active"}
+
+    if verb == "LEARN":
+        return {"status": "acknowledged", "message": "Knowledge ingestion coming soon"}
 
 
 if __name__ == "__main__":
