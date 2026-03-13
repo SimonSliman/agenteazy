@@ -85,7 +85,7 @@ volume = modal.Volume.from_name("agenteazy-registry-vol", create_if_missing=True
 image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(["fastapi>=0.100.0", "uvicorn>=0.23.0"])
-    .add_local_file({registry_src_repr}, remote_path="/app/registry.py")
+    .add_local_file({registry_src_repr}, remote_path="/app/registry.py", copy=True)
     .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_DB_PATH": "/data/agenteazy-registry.db"}})
     .workdir("/app")
 )
@@ -97,8 +97,8 @@ image = (
     memory=512,
     cpu=1.0,
     volumes={{"/data": volume}},
-    allow_concurrent_inputs=100,
 )
+@modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def serve():
     import importlib.util
