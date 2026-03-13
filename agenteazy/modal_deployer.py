@@ -1,4 +1,9 @@
-"""Modal Deployer - Deploy wrapped agents to Modal as serverless web endpoints."""
+"""Modal Deployer - Deploy wrapped agents to Modal as serverless web endpoints.
+
+Supports two modes:
+  1. Legacy: deploy each agent as its own Modal app (deploy_to_modal)
+  2. Gateway: upload agent code to a shared Modal Volume (upload_to_volume)
+"""
 
 import json
 import os
@@ -7,6 +12,8 @@ import subprocess
 import sys
 import tempfile
 import time
+
+VOLUME_NAME = "agenteazy-agents-vol"
 
 
 def check_modal_auth() -> bool:
@@ -356,3 +363,107 @@ def get_modal_url(agent_name: str) -> str:
 
     # If not found in list, try the expected URL pattern
     return f"https://<workspace>--{modal_app_name}-serve.modal.run"
+
+
+# ── Gateway mode: upload to shared volume ────────────────────────────
+
+
+def upload_to_volume(output_dir: str, agent_name: str, gateway_url: str) -> str:
+    """Upload agent code to the shared Modal Volume for the gateway.
+
+    Instead of creating a new Modal app, this writes the agent's files
+    (wrapper.py, agent.json, repo/, requirements.txt) to the shared volume
+    at /agents/{agent_name}/.
+
+    Args:
+        output_dir: Path to agenteazy-output/<name>/ containing the agent files.
+        agent_name: Sanitized agent name (used as the directory name on the volume).
+        gateway_url: The base URL of the deployed gateway.
+
+    Returns:
+        The agent's endpoint URL through the gateway.
+    """
+    if not check_modal_auth():
+        raise RuntimeError(
+            "Modal not authenticated.\n"
+            "  Fix: Run 'modal setup' to configure your token.\n"
+            "  Tokens are stored in ~/.modal.toml"
+        )
+
+    output_dir = os.path.abspath(output_dir)
+
+    # Validate required files
+    for required in ("agent.json", "wrapper.py"):
+        path = os.path.join(output_dir, required)
+        if not os.path.isfile(path):
+            raise FileNotFoundError(f"{required} not found in {output_dir}")
+
+    agent_name = sanitize_agent_name(agent_name)
+
+    # Generate a script that uploads the local dir to the volume
+    upload_script = _generate_upload_script(output_dir, agent_name)
+
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix="_vol_upload.py", dir=output_dir, delete=False
+    ) as f:
+        f.write(upload_script)
+        script_path = f.name
+
+    try:
+        print(f"\nUploading '{agent_name}' to volume '{VOLUME_NAME}'...")
+
+        result = None
+        for attempt in range(2):
+            try:
+                result = subprocess.run(
+                    [sys.executable, script_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                break
+            except subprocess.TimeoutExpired:
+                if attempt == 0:
+                    print("Upload timed out, retrying once...")
+                    time.sleep(2)
+                else:
+                    raise RuntimeError(
+                        "Volume upload timed out after 2 attempts.\n"
+                        "  Check your network connection and try again."
+                    )
+
+        if result.returncode != 0:
+            error_msg = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(f"Volume upload failed:\n{error_msg}")
+
+        # Return the gateway URL for this agent
+        gw = gateway_url.rstrip("/")
+        return f"{gw}/agent/{agent_name}/do"
+    finally:
+        os.unlink(script_path)
+
+
+def _generate_upload_script(output_dir: str, agent_name: str) -> str:
+    """Generate a Python script that uploads agent files to the Modal Volume."""
+    output_dir_repr = repr(output_dir)
+    agent_name_repr = repr(agent_name)
+    volume_name_repr = repr(VOLUME_NAME)
+
+    return f'''"""Auto-generated script to upload agent code to Modal Volume."""
+
+import os
+import modal
+
+volume = modal.Volume.from_name({volume_name_repr}, create_if_missing=True)
+local_dir = {output_dir_repr}
+agent_name = {agent_name_repr}
+remote_base = f"/{{agent_name}}"
+
+# Upload the entire output directory to the volume under /agent_name/
+# We walk the local directory and put each file individually
+with volume.batch_upload() as batch:
+    batch.put_directory(local_dir, remote_base)
+
+volume.commit()
+print(f"Uploaded {{agent_name}} to volume at {{remote_base}}/")
+'''

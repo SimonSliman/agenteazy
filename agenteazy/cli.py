@@ -24,6 +24,7 @@ from agenteazy.modal_deployer import (
     list_deployed_agents,
     sanitize_agent_name,
     stop_agent,
+    upload_to_volume,
 )
 from agenteazy.generator import generate_agent_json, save_agent_json, record_deploy
 from agenteazy.wrapper_template import generate_wrapper, validate_wrapper
@@ -38,6 +39,9 @@ app = typer.Typer(
 )
 registry_app = typer.Typer(help="Manage the agent registry server.")
 app.add_typer(registry_app, name="registry")
+
+gateway_app = typer.Typer(help="Manage the single gateway endpoint.")
+app.add_typer(gateway_app, name="gateway")
 
 console = Console()
 
@@ -230,8 +234,10 @@ def deploy(
     local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
     port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
+    legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
 ):
-    """Analyze, wrap, and deploy an agent. Deploys to Modal by default, or locally with --local."""
+    """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
+    from agenteazy.config import get_gateway_url
 
     console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
 
@@ -309,16 +315,15 @@ def deploy(
             raise typer.Exit(code=1)
         except KeyboardInterrupt:
             pass
-    else:
-        # Modal deployment path
-        console.print("[dim]Step 3/4: Deploying to Modal...[/dim]")
+    elif legacy:
+        # Legacy: one Modal app per agent
+        console.print("[dim]Step 3/4: Deploying to Modal (legacy per-agent app)...[/dim]")
         try:
             url = deploy_to_modal(output_dir, analysis.repo_name)
         except Exception as e:
             _handle_error(e, "Modal deploy")
             raise typer.Exit(code=1)
 
-        # Record deploy in history
         record_deploy(
             name=agent_config["name"],
             version=agent_config["version"],
@@ -337,10 +342,53 @@ def deploy(
             f"  POST {url}/ask\n"
             f"  POST {url}/do\n"
             f"  GET  {url}/.well-known/agent.json",
-            title="AgentEazy - Modal Deploy",
+            title="AgentEazy - Modal Deploy (Legacy)",
         ))
 
-        # Auto-register with registry if URL provided
+        if registry:
+            console.print(f"\n[dim]Registering with registry at {registry}...[/dim]")
+            _register_with_registry(registry, agent_config, url, analysis)
+    else:
+        # Gateway mode: upload to shared volume
+        gateway_url = get_gateway_url()
+        if not gateway_url:
+            console.print(
+                "[bold red]Error:[/bold red] No gateway URL configured.\n"
+                "[dim]  Deploy the gateway first: agenteazy gateway deploy\n"
+                "  Or use --legacy for per-agent Modal apps.[/dim]"
+            )
+            raise typer.Exit(code=1)
+
+        console.print("[dim]Step 3/4: Uploading to gateway volume...[/dim]")
+        try:
+            url = upload_to_volume(output_dir, analysis.repo_name, gateway_url)
+        except Exception as e:
+            _handle_error(e, "volume upload")
+            raise typer.Exit(code=1)
+
+        agent_name_sanitized = sanitize_agent_name(analysis.repo_name)
+        gw = gateway_url.rstrip("/")
+
+        record_deploy(
+            name=agent_config["name"],
+            version=agent_config["version"],
+            url=url,
+            modal_app_name=agent_name_sanitized,
+        )
+
+        console.print()
+        console.print(Panel.fit(
+            f"[bold green]Deployed![/bold green] Agent uploaded to gateway:\n\n"
+            f"  [cyan]{url}[/cyan]\n\n"
+            f"Version: {agent_config['version']}\n\n"
+            f"Endpoints:\n"
+            f"  GET  {gw}/agent/{agent_name_sanitized}\n"
+            f"  POST {gw}/agent/{agent_name_sanitized}/ask\n"
+            f"  POST {gw}/agent/{agent_name_sanitized}/do\n\n"
+            f"Gateway: {gw}/agents",
+            title="AgentEazy - Gateway Deploy",
+        ))
+
         if registry:
             console.print(f"\n[dim]Registering with registry at {registry}...[/dim]")
             _register_with_registry(registry, agent_config, url, analysis)
@@ -752,6 +800,79 @@ def registry_deploy():
         f"  agenteazy deploy <repo> --registry {url}",
         title="AgentEazy Registry",
     ))
+
+
+# ── Gateway subcommands ───────────────────────────────────────────────
+
+@gateway_app.command("deploy")
+def gateway_deploy():
+    """Deploy the single gateway to Modal. Run this once before deploying agents."""
+    from agenteazy.gateway_deployer import deploy_gateway
+    from agenteazy.config import set_gateway_url
+
+    console.print("\n[bold blue]Deploying gateway to Modal...[/bold blue]\n")
+
+    try:
+        url = deploy_gateway()
+    except Exception as e:
+        _handle_error(e, "gateway deploy")
+        raise typer.Exit(code=1)
+
+    set_gateway_url(url)
+
+    console.print()
+    console.print(Panel.fit(
+        f"[bold green]Gateway deployed![/bold green]\n\n"
+        f"  URL: [cyan]{url}[/cyan]\n\n"
+        f"Saved to ~/.agenteazy/config.json\n\n"
+        f"Endpoints:\n"
+        f"  GET  {url}/health\n"
+        f"  GET  {url}/agents\n"
+        f"  GET  {url}/agent/{{name}}\n"
+        f"  POST {url}/agent/{{name}}/ask\n"
+        f"  POST {url}/agent/{{name}}/do\n\n"
+        f"Now deploy agents with:\n"
+        f"  agenteazy deploy <repo>",
+        title="AgentEazy Gateway",
+    ))
+
+
+@gateway_app.command("status")
+def gateway_status():
+    """Show the current gateway URL and health."""
+    from agenteazy.config import get_gateway_url
+
+    gateway_url = get_gateway_url()
+    if not gateway_url:
+        console.print("\n[yellow]No gateway configured.[/yellow]")
+        console.print("[dim]Deploy one with: agenteazy gateway deploy[/dim]\n")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold]Gateway URL:[/bold] {gateway_url}")
+
+    # Try health check
+    try:
+        url = f"{gateway_url.rstrip('/')}/health"
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+        console.print(f"[bold green]Health:[/bold green] {data.get('status', 'ok')}")
+    except Exception as e:
+        console.print(f"[bold red]Health check failed:[/bold red] {e}")
+
+    # Try listing agents
+    try:
+        url = f"{gateway_url.rstrip('/')}/agents"
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+        agents = data.get("agents", [])
+        count = data.get("count", len(agents))
+        console.print(f"[bold]Agents:[/bold] {count}")
+        for a in agents:
+            console.print(f"  - {a['name']} v{a.get('version', '?')}: {a.get('description', '')}")
+    except Exception as e:
+        console.print(f"[yellow]Could not list agents:[/yellow] {e}")
+
+    console.print()
 
 
 if __name__ == "__main__":
