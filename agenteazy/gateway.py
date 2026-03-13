@@ -24,35 +24,16 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-# ── Inlined from agenteazy.agentlang (gateway must be self-contained for Modal) ──
-VERBS = {
-    "ASK": {"description": "Query without changing state", "http_equiv": "GET", "requires_auth": False},
-    "DO": {"description": "Execute a task, may change state", "http_equiv": "POST", "requires_auth": False},
-    "FIND": {"description": "Search for agents or data", "http_equiv": "GET", "requires_auth": False},
-    "PAY": {"description": "Transfer credits for service", "http_equiv": "POST", "requires_auth": True},
-    "WATCH": {"description": "Subscribe to changes", "http_equiv": "POST", "requires_auth": False},
-    "STOP": {"description": "Halt current task", "http_equiv": "DELETE", "requires_auth": False},
-    "TRUST": {"description": "Establish authenticated session", "http_equiv": "POST", "requires_auth": False},
-    "SHARE": {"description": "Pass context between agents", "http_equiv": "POST", "requires_auth": False},
-    "LEARN": {"description": "Ingest new knowledge", "http_equiv": "POST", "requires_auth": True},
-    "REPORT": {"description": "Get audit log of actions", "http_equiv": "GET", "requires_auth": False},
-}
-VALID_VERBS = list(VERBS.keys())
+VALID_VERBS = ["ASK", "DO", "FIND", "PAY", "WATCH", "STOP", "TRUST", "SHARE", "LEARN", "REPORT"]
 
 
-def validate_verb(verb: str) -> bool:
-    """Check whether the given verb is one of the 10 AgentLang verbs."""
-    return verb.upper() in VERBS
+def validate_verb(verb):
+    return isinstance(verb, str) and verb.upper() in VALID_VERBS
 
 
-# ── Inlined from agenteazy.config (gateway must be self-contained for Modal) ──
-def _get_registry_url() -> str | None:
-    """Return the stored registry URL from ~/.agenteazy/config.json, or None."""
+def _get_registry_url():
     import json as _json
-    from pathlib import Path as _Path
-    config_file = _Path.home() / ".agenteazy" / "config.json"
-    if not config_file.is_file():
-        return None
+    config_file = os.path.expanduser("~/.agenteazy/config.json")
     try:
         with open(config_file) as f:
             return _json.load(f).get("registry_url")
@@ -66,10 +47,10 @@ AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
 _volume = modal.Volume.from_name("agenteazy-agents-vol")
 
 
-def _refresh_volume() -> None:
+async def _refresh_volume() -> None:
     """Reload the Modal Volume so the container sees the latest files."""
     try:
-        _volume.reload()
+        await _volume.reload.aio()
     except Exception:
         pass  # best-effort; avoid crashing requests if reload fails
 
@@ -199,9 +180,9 @@ def health():
 
 
 @app.get("/agents")
-def list_all_agents():
+async def list_all_agents():
     """List all available agents on the volume."""
-    _refresh_volume()
+    await _refresh_volume()
     agent_names = _list_agents()
     agents = []
     for name in agent_names:
@@ -219,9 +200,9 @@ def list_all_agents():
 
 
 @app.get("/agent/{agent_name}")
-def agent_info(agent_name: str):
+async def agent_info(agent_name: str):
     """Return basic info about a specific agent."""
-    _refresh_volume()
+    await _refresh_volume()
     config = _load_agent_config(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -234,9 +215,9 @@ def agent_info(agent_name: str):
 
 
 @app.post("/agent/{agent_name}/ask")
-def agent_ask(agent_name: str):
+async def agent_ask(agent_name: str):
     """Return an agent's capabilities."""
-    _refresh_volume()
+    await _refresh_volume()
     func, config = _load_agent_func(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -253,7 +234,7 @@ def agent_ask(agent_name: str):
 @app.post("/agent/{agent_name}/do")
 async def agent_do(agent_name: str, request: Request, body: dict = None):
     """Execute an agent's entry function."""
-    _refresh_volume()
+    await _refresh_volume()
     # Input size check
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
@@ -308,22 +289,22 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 @app.post("/agent/{agent_name}/")
 async def agent_universal(agent_name: str, request: Request, body: dict = None):
     """Universal AgentLang endpoint — route by verb."""
-    _refresh_volume()
-    content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
-
-    body = body or {}
-    verb = body.get("verb", "").upper()
-    payload = body.get("payload", {})
-
-    if not validate_verb(verb):
-        return JSONResponse(
-            status_code=400,
-            content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
-        )
-
     try:
+        await _refresh_volume()
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
+            raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+
+        body = body or {}
+        verb = body.get("verb", "").upper()
+        payload = body.get("payload", {})
+
+        if not validate_verb(verb):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
+            )
+
         result = _handle_verb(agent_name, verb, payload)
         _log_call(agent_name, verb, "success")
         return result
@@ -331,7 +312,8 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         _log_call(agent_name, verb, "failed")
         raise
     except Exception as e:
-        _log_call(agent_name, verb, "failed")
+        verb_val = body.get("verb", "") if isinstance(body, dict) else ""
+        _log_call(agent_name, verb_val.upper() if verb_val else "UNKNOWN", "failed")
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
         return JSONResponse(
@@ -359,8 +341,8 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
     if verb == "DO":
         func, config = _load_agent_func(agent_name)
         entry_args = config["entry"]["args"]
-        data = payload.get("data", {})
-        task = payload.get("task")
+        # Accept both {"data": {...}} and {"input": {...}} payload formats
+        data = payload.get("data") or payload.get("input") or {}
         kwargs = {a: data.get(a) for a in entry_args} if entry_args else {}
         # Inject shared context if function accepts **kwargs
         ctx = _agent_context.get(agent_name)
@@ -409,7 +391,7 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
         return {"status": "completed", "config": config, "recent_calls": log}
 
     if verb == "SHARE":
-        data = payload.get("data", {})
+        data = payload.get("data") or payload.get("input") or {}
         if agent_name not in _agent_context:
             _agent_context[agent_name] = {}
         _agent_context[agent_name].update(data)
