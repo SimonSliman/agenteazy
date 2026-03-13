@@ -24,7 +24,41 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from agenteazy.agentlang import VALID_VERBS, validate_verb
+# ── Inlined from agenteazy.agentlang (gateway must be self-contained for Modal) ──
+VERBS = {
+    "ASK": {"description": "Query without changing state", "http_equiv": "GET", "requires_auth": False},
+    "DO": {"description": "Execute a task, may change state", "http_equiv": "POST", "requires_auth": False},
+    "FIND": {"description": "Search for agents or data", "http_equiv": "GET", "requires_auth": False},
+    "PAY": {"description": "Transfer credits for service", "http_equiv": "POST", "requires_auth": True},
+    "WATCH": {"description": "Subscribe to changes", "http_equiv": "POST", "requires_auth": False},
+    "STOP": {"description": "Halt current task", "http_equiv": "DELETE", "requires_auth": False},
+    "TRUST": {"description": "Establish authenticated session", "http_equiv": "POST", "requires_auth": False},
+    "SHARE": {"description": "Pass context between agents", "http_equiv": "POST", "requires_auth": False},
+    "LEARN": {"description": "Ingest new knowledge", "http_equiv": "POST", "requires_auth": True},
+    "REPORT": {"description": "Get audit log of actions", "http_equiv": "GET", "requires_auth": False},
+}
+VALID_VERBS = list(VERBS.keys())
+
+
+def validate_verb(verb: str) -> bool:
+    """Check whether the given verb is one of the 10 AgentLang verbs."""
+    return verb.upper() in VERBS
+
+
+# ── Inlined from agenteazy.config (gateway must be self-contained for Modal) ──
+def _get_registry_url() -> str | None:
+    """Return the stored registry URL from ~/.agenteazy/config.json, or None."""
+    import json as _json
+    from pathlib import Path as _Path
+    config_file = _Path.home() / ".agenteazy" / "config.json"
+    if not config_file.is_file():
+        return None
+    try:
+        with open(config_file) as f:
+            return _json.load(f).get("registry_url")
+    except Exception:
+        return None
+
 
 AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
 
@@ -356,8 +390,7 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
             )
 
     if verb == "FIND":
-        from agenteazy.config import get_registry_url
-        registry_url = os.environ.get("AGENTEAZY_REGISTRY_URL") or get_registry_url()
+        registry_url = os.environ.get("AGENTEAZY_REGISTRY_URL") or _get_registry_url()
         if not registry_url:
             return {"status": "failed", "error": "No registry URL configured"}
         query = payload.get("data", "")
