@@ -101,8 +101,8 @@ image = (
     memory=512,
     cpu=1.0,
     volumes={{"/agents": volume}},
-    allow_concurrent_inputs=100,
 )
+@modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def serve():
     import importlib.util
