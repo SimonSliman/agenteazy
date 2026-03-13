@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DB_PATH = Path("./agenteazy-registry.db")
+DB_PATH = Path(os.environ.get("AGENTEAZY_DB_PATH", "./agenteazy-registry.db"))
 
 app = FastAPI(title="AgentEazy Registry", version="0.1.0")
 
