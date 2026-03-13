@@ -726,5 +726,33 @@ def registry_start(
         console.print("\n[dim]Registry server stopped.[/dim]")
 
 
+@registry_app.command("deploy")
+def registry_deploy():
+    """Deploy the registry to Modal as a public web endpoint with persistent storage."""
+    from agenteazy.registry_deployer import deploy_registry
+    from agenteazy.config import set_registry_url
+
+    console.print("\n[bold blue]Deploying registry to Modal...[/bold blue]\n")
+
+    try:
+        url = deploy_registry()
+    except Exception as e:
+        _handle_error(e, "registry deploy")
+        raise typer.Exit(code=1)
+
+    # Save the URL so other commands can use it
+    set_registry_url(url)
+
+    console.print()
+    console.print(Panel.fit(
+        f"[bold green]Registry deployed![/bold green]\n\n"
+        f"  URL: [cyan]{url}[/cyan]\n\n"
+        f"Saved to ~/.agenteazy/config.json\n\n"
+        f"Use it with:\n"
+        f"  agenteazy deploy <repo> --registry {url}",
+        title="AgentEazy Registry",
+    ))
+
+
 if __name__ == "__main__":
     app()
