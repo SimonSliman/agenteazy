@@ -28,7 +28,7 @@ VALID_VERBS = ["ASK", "DO", "FIND", "PAY", "WATCH", "STOP", "TRUST", "SHARE", "L
 
 
 def validate_verb(verb):
-    return verb.upper() in VALID_VERBS
+    return isinstance(verb, str) and verb.upper() in VALID_VERBS
 
 
 def _get_registry_url():
@@ -47,10 +47,10 @@ AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
 _volume = modal.Volume.from_name("agenteazy-agents-vol")
 
 
-def _refresh_volume() -> None:
+async def _refresh_volume() -> None:
     """Reload the Modal Volume so the container sees the latest files."""
     try:
-        _volume.reload()
+        await _volume.reload.aio()
     except Exception:
         pass  # best-effort; avoid crashing requests if reload fails
 
@@ -180,9 +180,9 @@ def health():
 
 
 @app.get("/agents")
-def list_all_agents():
+async def list_all_agents():
     """List all available agents on the volume."""
-    _refresh_volume()
+    await _refresh_volume()
     agent_names = _list_agents()
     agents = []
     for name in agent_names:
@@ -200,9 +200,9 @@ def list_all_agents():
 
 
 @app.get("/agent/{agent_name}")
-def agent_info(agent_name: str):
+async def agent_info(agent_name: str):
     """Return basic info about a specific agent."""
-    _refresh_volume()
+    await _refresh_volume()
     config = _load_agent_config(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -215,9 +215,9 @@ def agent_info(agent_name: str):
 
 
 @app.post("/agent/{agent_name}/ask")
-def agent_ask(agent_name: str):
+async def agent_ask(agent_name: str):
     """Return an agent's capabilities."""
-    _refresh_volume()
+    await _refresh_volume()
     func, config = _load_agent_func(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -234,7 +234,7 @@ def agent_ask(agent_name: str):
 @app.post("/agent/{agent_name}/do")
 async def agent_do(agent_name: str, request: Request, body: dict = None):
     """Execute an agent's entry function."""
-    _refresh_volume()
+    await _refresh_volume()
     # Input size check
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
@@ -290,7 +290,7 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 async def agent_universal(agent_name: str, request: Request, body: dict = None):
     """Universal AgentLang endpoint — route by verb."""
     try:
-        _refresh_volume()
+        await _refresh_volume()
         content_length = request.headers.get("content-length")
         if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
             raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
