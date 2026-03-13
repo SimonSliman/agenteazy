@@ -186,7 +186,7 @@ class TestUniversalEndpoint:
     def test_invalid_verb_returns_400(self):
         from starlette.testclient import TestClient
         # Patch _refresh_volume to no-op
-        with mock.patch("agenteazy.gateway._refresh_volume"):
+        with mock.patch("agenteazy.gateway._refresh_volume", new_callable=mock.AsyncMock):
             client = TestClient(app)
             resp = client.post("/agent/test-agent/", json={"verb": "INVALID"})
             assert resp.status_code == 400
@@ -196,7 +196,7 @@ class TestUniversalEndpoint:
 
     def test_do_via_endpoint(self):
         from starlette.testclient import TestClient
-        with mock.patch("agenteazy.gateway._refresh_volume"):
+        with mock.patch("agenteazy.gateway._refresh_volume", new_callable=mock.AsyncMock):
             client = TestClient(app)
             resp = client.post("/agent/test-agent/", json={
                 "verb": "DO",
@@ -207,7 +207,7 @@ class TestUniversalEndpoint:
 
     def test_do_via_endpoint_input_format(self):
         from starlette.testclient import TestClient
-        with mock.patch("agenteazy.gateway._refresh_volume"):
+        with mock.patch("agenteazy.gateway._refresh_volume", new_callable=mock.AsyncMock):
             client = TestClient(app)
             resp = client.post("/agent/test-agent/", json={
                 "verb": "DO",
