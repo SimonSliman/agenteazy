@@ -32,6 +32,9 @@ def validate_verb(verb):
 
 
 def _get_registry_url():
+    env_url = os.environ.get("AGENTEAZY_REGISTRY_URL")
+    if env_url:
+        return env_url
     import json as _json
     config_file = os.path.expanduser("~/.agenteazy/config.json")
     try:
