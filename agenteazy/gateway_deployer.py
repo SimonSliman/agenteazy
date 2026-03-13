@@ -90,7 +90,7 @@ image = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(["fastapi>=0.100.0", "uvicorn>=0.23.0"])
     .add_local_file({gateway_src_repr}, remote_path="/app/gateway.py", copy=True)
-    .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "https://simondusable--agenteazy-registry-serve.modal.run"}})
+    .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "https://simondusable--agenteazy-registry-serve.modal.run", "AGENTEAZY_REGISTRY_URL": "https://simondusable--agenteazy-registry-serve.modal.run"}})
     .workdir("/app")
 )
 
