@@ -459,10 +459,25 @@ local_dir = {output_dir_repr}
 agent_name = {agent_name_repr}
 remote_base = f"/{{agent_name}}"
 
-# Upload the entire output directory to the volume under /agent_name/
-# We walk the local directory and put each file individually
-with volume.batch_upload() as batch:
-    batch.put_directory(local_dir, remote_base)
+# Clean slate: remove the agent's folder on the volume before re-uploading
+try:
+    volume.remove_file(remote_base, recursive=True)
+    volume.commit()
+    print(f"Cleared existing {{remote_base}}/ on volume")
+except Exception:
+    pass  # folder may not exist yet
+
+# Upload files, skipping __pycache__ dirs and .pyc files
+with volume.batch_upload(force=True) as batch:
+    for root, dirs, files in os.walk(local_dir):
+        dirs[:] = [d for d in dirs if d != "__pycache__"]
+        for fname in files:
+            if fname.endswith(".pyc"):
+                continue
+            local_path = os.path.join(root, fname)
+            rel = os.path.relpath(local_path, local_dir)
+            remote_path = remote_base + "/" + rel.replace(os.sep, "/")
+            batch.put_file(local_path, remote_path)
 
 volume.commit()
 print(f"Uploaded {{agent_name}} to volume at {{remote_base}}/")
