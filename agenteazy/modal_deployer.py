@@ -462,7 +462,7 @@ remote_base = f"/{{agent_name}}"
 # Clean slate: remove the agent's folder on the volume before re-uploading
 try:
     volume.remove_file(remote_base, recursive=True)
-    volume.commit()
+    # commit handled by batch_upload
     print(f"Cleared existing {{remote_base}}/ on volume")
 except Exception:
     pass  # folder may not exist yet
@@ -479,6 +479,6 @@ with volume.batch_upload(force=True) as batch:
             remote_path = remote_base + "/" + rel.replace(os.sep, "/")
             batch.put_file(local_path, remote_path)
 
-volume.commit()
+# commit handled by batch_upload
 print(f"Uploaded {{agent_name}} to volume at {{remote_base}}/")
 '''
