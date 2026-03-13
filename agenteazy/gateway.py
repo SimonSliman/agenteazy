@@ -14,11 +14,24 @@ import sys
 import traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
+import modal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
+
+# Modal Volume handle – reload() before reading so newly uploaded agents are visible
+_volume = modal.Volume.from_name("agenteazy-agents-vol")
+
+
+def _refresh_volume() -> None:
+    """Reload the Modal Volume so the container sees the latest files."""
+    try:
+        _volume.reload()
+    except Exception:
+        pass  # best-effort; avoid crashing requests if reload fails
+
 FUNCTION_TIMEOUT_SECONDS = 25
 MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
 _executor = ThreadPoolExecutor(max_workers=8)
@@ -129,6 +142,7 @@ def health():
 @app.get("/agents")
 def list_all_agents():
     """List all available agents on the volume."""
+    _refresh_volume()
     agent_names = _list_agents()
     agents = []
     for name in agent_names:
@@ -148,6 +162,7 @@ def list_all_agents():
 @app.get("/agent/{agent_name}")
 def agent_info(agent_name: str):
     """Return basic info about a specific agent."""
+    _refresh_volume()
     config = _load_agent_config(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -162,6 +177,7 @@ def agent_info(agent_name: str):
 @app.post("/agent/{agent_name}/ask")
 def agent_ask(agent_name: str):
     """Return an agent's capabilities."""
+    _refresh_volume()
     func, config = _load_agent_func(agent_name)
     return {
         "name": config.get("name", agent_name),
@@ -178,6 +194,7 @@ def agent_ask(agent_name: str):
 @app.post("/agent/{agent_name}/do")
 async def agent_do(agent_name: str, request: Request, body: dict = None):
     """Execute an agent's entry function."""
+    _refresh_volume()
     # Input size check
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
