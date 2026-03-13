@@ -75,14 +75,15 @@ def _handle_error(e: Exception, context: str = "") -> None:
 
 def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: str, analysis) -> bool:
     """POST agent details to the registry. Returns True on success."""
+    entry = agent_config.get("entry", {})
     payload = {
         "name": agent_config.get("name", analysis.repo_name),
         "description": agent_config.get("description", ""),
         "url": deploy_url,
         "language": analysis.language,
         "verbs": agent_config.get("verbs", []),
-        "entry_function": agent_config.get("entry_function", ""),
-        "entry_file": agent_config.get("entry_file", ""),
+        "entry_function": entry.get("function", ""),
+        "entry_file": entry.get("file", ""),
         "tags": agent_config.get("tags", []),
     }
     data = json.dumps(payload).encode()
@@ -237,7 +238,7 @@ def deploy(
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
-    from agenteazy.config import get_gateway_url
+    from agenteazy.config import get_gateway_url, get_registry_url
 
     console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
 
@@ -389,9 +390,14 @@ def deploy(
             title="AgentEazy - Gateway Deploy",
         ))
 
-        if registry:
-            console.print(f"\n[dim]Registering with registry at {registry}...[/dim]")
-            _register_with_registry(registry, agent_config, url, analysis)
+        # Auto-register: use --registry flag, or fall back to configured registry
+        registry_url = registry or get_registry_url()
+        if registry_url:
+            console.print(f"\n[dim]Registering with registry at {registry_url}...[/dim]")
+            _register_with_registry(registry_url, agent_config, f"{gw}/agent/{agent_name_sanitized}", analysis)
+        else:
+            console.print("\n[dim]No registry URL configured — skipping registration.[/dim]")
+            console.print("[dim]  Set one with: agenteazy registry deploy[/dim]")
 
 
 @app.command()
@@ -419,9 +425,13 @@ def test(
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query"),
-    registry: str = typer.Option("http://localhost:8001", "--registry", help="Registry server URL"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Registry server URL"),
 ):
     """Search for agents in the registry."""
+    from agenteazy.config import get_registry_url
+
+    if not registry:
+        registry = get_registry_url() or "http://localhost:8001"
     url = f"{registry.rstrip('/')}/registry/search?q={urllib.request.quote(query)}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
@@ -462,11 +472,15 @@ def search(
 
 @app.command(name="list")
 def list_agents(
-    registry: str = typer.Option("http://localhost:8001", "--registry", help="Registry server URL"),
+    registry: Optional[str] = typer.Option(None, "--registry", help="Registry server URL"),
     limit: int = typer.Option(50, "--limit", "-n", help="Max agents to show"),
     offset: int = typer.Option(0, "--offset", help="Offset for pagination"),
 ):
     """List all agents in the registry."""
+    from agenteazy.config import get_registry_url
+
+    if not registry:
+        registry = get_registry_url() or "http://localhost:8001"
     url = f"{registry.rstrip('/')}/registry/all?limit={limit}&offset={offset}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
