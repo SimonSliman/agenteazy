@@ -4,12 +4,12 @@ import json
 import os
 import secrets
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -80,6 +80,12 @@ def _get_db() -> sqlite3.Connection:
             created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Add ip_address column if it doesn't exist yet
+    bal_cursor = conn.execute("PRAGMA table_info(balances)")
+    bal_columns = [row[1] for row in bal_cursor.fetchall()]
+    if "ip_address" not in bal_columns:
+        conn.execute("ALTER TABLE balances ADD COLUMN ip_address TEXT")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -258,11 +264,27 @@ class EarnRequest(BaseModel):
     source: str
 
 
+class CheckTransferLimitRequest(BaseModel):
+    api_key: str
+    amount: int
+
+
 # ── Tollbooth Endpoints ─────────────────────────────────────────────
 
 @app.post("/tollbooth/signup")
-def tollbooth_signup(req: SignupRequest):
+def tollbooth_signup(req: SignupRequest, request: Request):
     db = _get_db()
+
+    # Duplicate email protection
+    if req.email:
+        email_exists = db.execute(
+            "SELECT api_key FROM balances WHERE email = ?",
+            (req.email,),
+        ).fetchone()
+        if email_exists:
+            db.close()
+            return JSONResponse(status_code=409, content={"error": "Email already registered"})
+
     existing = db.execute(
         "SELECT api_key FROM balances WHERE github_username = ?",
         (req.github_username,),
@@ -271,12 +293,23 @@ def tollbooth_signup(req: SignupRequest):
         db.close()
         return JSONResponse(status_code=409, content={"error": "Account already exists"})
 
+    # Rate limit signups: max 5 per IP per hour
+    client_ip = request.client.host if request.client else "unknown"
+    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    signup_count = db.execute(
+        "SELECT COUNT(*) FROM balances WHERE ip_address = ? AND created_at >= ?",
+        (client_ip, one_hour_ago),
+    ).fetchone()[0]
+    if signup_count >= 5:
+        db.close()
+        return JSONResponse(status_code=429, content={"error": "Too many signups. Try again later."})
+
     api_key = "ae_" + secrets.token_hex(16)
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
-        """INSERT INTO balances (api_key, github_username, email, credits, total_earned, total_spent, bonus_claimed, created_at)
-           VALUES (?, ?, ?, 50, 0, 0, 0, ?)""",
-        (api_key, req.github_username, req.email, now),
+        """INSERT INTO balances (api_key, github_username, email, credits, total_earned, total_spent, bonus_claimed, created_at, ip_address)
+           VALUES (?, ?, ?, 50, 0, 0, 0, ?, ?)""",
+        (api_key, req.github_username, req.email, now, client_ip),
     )
     db.execute(
         """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
@@ -310,6 +343,27 @@ def tollbooth_deduct(req: DeductRequest):
     if not row:
         db.close()
         return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+
+    one_hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+
+    # Rate limit: max 200 deductions per API key per hour
+    call_count = db.execute(
+        "SELECT COUNT(*) FROM transactions WHERE from_key = ? AND type = 'agent_call' AND timestamp >= ?",
+        (req.api_key, one_hour_ago),
+    ).fetchone()[0]
+    if call_count >= 200:
+        db.close()
+        return JSONResponse(status_code=429, content={"error": "Rate limit exceeded. Max 200 calls per hour."})
+
+    # Velocity limit: max 500 credits spent per hour per API key
+    spent_hour = db.execute(
+        "SELECT COALESCE(SUM(credits), 0) FROM transactions WHERE from_key = ? AND type = 'agent_call' AND timestamp >= ?",
+        (req.api_key, one_hour_ago),
+    ).fetchone()[0]
+    if spent_hour + req.amount > 500:
+        db.close()
+        return JSONResponse(status_code=429, content={"error": "Spending limit exceeded. Max 500 credits per hour."})
+
     if row["credits"] < req.amount:
         balance = row["credits"]
         db.close()
@@ -383,6 +437,24 @@ def tollbooth_stats():
         "total_credits_in_circulation": total_credits,
         "total_transactions": total_transactions,
     }
+
+
+@app.post("/tollbooth/check-transfer-limit")
+def check_transfer_limit(req: CheckTransferLimitRequest):
+    db = _get_db()
+    row = db.execute("SELECT api_key FROM balances WHERE api_key = ?", (req.api_key,)).fetchone()
+    if not row:
+        db.close()
+        return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+    one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    daily_transferred = db.execute(
+        "SELECT COALESCE(SUM(credits), 0) FROM transactions WHERE from_key = ? AND type = 'pay_transfer' AND timestamp >= ?",
+        (req.api_key, one_day_ago),
+    ).fetchone()[0]
+    db.close()
+    if daily_transferred + req.amount > 1000:
+        return JSONResponse(status_code=429, content={"error": "Daily transfer limit exceeded. Max 1000 credits per day."})
+    return {"ok": True, "daily_transferred": daily_transferred}
 
 
 if __name__ == "__main__":
