@@ -37,12 +37,17 @@ Modal does not currently support per-function network policies. Deployed agents 
 Agents could theoretically request GPU resources if the Modal deploy script is modified. The generated script does not request GPUs, but a malicious actor who modifies the deploy script could.
 
 ### No Request Signing
-Requests to deployed agents are not signed or authenticated. Any client that knows the URL can call the agent's endpoints. Future versions should support:
+Requests to deployed agents are not signed or authenticated. Free agents can be called by anyone who knows the URL. Paid agents require an API key via the `auth` field or `x-api-key` header. Future versions should support:
 - HMAC-signed requests from the registry
-- API key authentication per agent
+- Mutual agent authentication via AgentPass
 
-### No Rate Limiting (Server-Side)
-The `X-RateLimit-Remaining` header is reserved for future use. Currently, there is no server-side rate limiting — Modal's own concurrency limits provide some protection.
+### TollBooth Anti-Abuse Protections
+The TollBooth billing system includes the following anti-abuse measures:
+- **Rate limiting**: Signup endpoint is rate-limited to prevent bulk account creation
+- **Velocity limits**: Unusual spending patterns are flagged
+- **Transfer limits**: PAY verb transfers are capped at 1,000 credits per transaction
+- **API key authentication**: Paid agents require valid API keys for billing
+- **Fail-open design**: If the billing service is unreachable, agents default to free access rather than blocking legitimate traffic
 
 ## Future Plans
 
@@ -60,4 +65,4 @@ If you discover a security vulnerability in AgentEazy, please report it responsi
 2. Email the maintainers with a description of the vulnerability
 3. Allow reasonable time for a fix before public disclosure
 
-Contact: [maintainer email placeholder — update before v1.0 release]
+Contact: hello@agenteazy.com
