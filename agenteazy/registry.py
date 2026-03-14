@@ -2,6 +2,7 @@
 
 import json
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +11,7 @@ from typing import Optional
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 DB_PATH = Path(os.environ.get("AGENTEAZY_DB_PATH", "./agenteazy-registry.db"))
@@ -57,6 +59,32 @@ def _get_db() -> sqlite3.Connection:
             created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             last_seen       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             status          TEXT DEFAULT 'active'
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS balances (
+            api_key         TEXT PRIMARY KEY,
+            github_username TEXT,
+            email           TEXT,
+            credits         INTEGER DEFAULT 0,
+            total_earned    INTEGER DEFAULT 0,
+            total_spent     INTEGER DEFAULT 0,
+            bonus_claimed   INTEGER DEFAULT 0,
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS transactions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            from_key        TEXT,
+            to_key          TEXT,
+            agent_name      TEXT,
+            credits         INTEGER,
+            platform_fee    INTEGER,
+            developer_credit INTEGER,
+            type            TEXT,
+            verb            TEXT,
+            timestamp       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     conn.commit()
@@ -190,6 +218,152 @@ def heartbeat(name: str):
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return {"alive": True}
+
+
+# ── Tollbooth Models ─────────────────────────────────────────────────
+
+class SignupRequest(BaseModel):
+    github_username: str
+    email: str
+
+
+class DeductRequest(BaseModel):
+    api_key: str
+    agent_name: str
+    amount: int
+
+
+class EarnRequest(BaseModel):
+    api_key: str
+    amount: int
+    source: str
+
+
+# ── Tollbooth Endpoints ─────────────────────────────────────────────
+
+@app.post("/tollbooth/signup")
+def tollbooth_signup(req: SignupRequest):
+    db = _get_db()
+    existing = db.execute(
+        "SELECT api_key FROM balances WHERE github_username = ?",
+        (req.github_username,),
+    ).fetchone()
+    if existing:
+        db.close()
+        return JSONResponse(status_code=409, content={"error": "Account already exists"})
+
+    api_key = "ae_" + secrets.token_hex(16)
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        """INSERT INTO balances (api_key, github_username, email, credits, total_earned, total_spent, bonus_claimed, created_at)
+           VALUES (?, ?, ?, 50, 0, 0, 0, ?)""",
+        (api_key, req.github_username, req.email, now),
+    )
+    db.execute(
+        """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
+           VALUES (NULL, ?, NULL, 50, 0, 0, 'signup_bonus', NULL, ?)""",
+        (api_key, now),
+    )
+    db.commit()
+    db.close()
+    return {"api_key": api_key, "credits": 50, "github_username": req.github_username}
+
+
+@app.get("/tollbooth/balance/{api_key}")
+def tollbooth_balance(api_key: str):
+    db = _get_db()
+    row = db.execute("SELECT * FROM balances WHERE api_key = ?", (api_key,)).fetchone()
+    db.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+    return {
+        "credits": row["credits"],
+        "total_earned": row["total_earned"],
+        "total_spent": row["total_spent"],
+        "github_username": row["github_username"],
+    }
+
+
+@app.post("/tollbooth/deduct")
+def tollbooth_deduct(req: DeductRequest):
+    db = _get_db()
+    row = db.execute("SELECT * FROM balances WHERE api_key = ?", (req.api_key,)).fetchone()
+    if not row:
+        db.close()
+        return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+    if row["credits"] < req.amount:
+        balance = row["credits"]
+        db.close()
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Insufficient credits", "balance": balance, "cost": req.amount},
+        )
+    new_balance = row["credits"] - req.amount
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE balances SET credits = ?, total_spent = total_spent + ? WHERE api_key = ?",
+        (new_balance, req.amount, req.api_key),
+    )
+    db.execute(
+        """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
+           VALUES (?, NULL, ?, ?, 0, 0, 'agent_call', NULL, ?)""",
+        (req.api_key, req.agent_name, req.amount, now),
+    )
+    db.commit()
+    db.close()
+    return {"success": True, "remaining": new_balance}
+
+
+@app.post("/tollbooth/earn")
+def tollbooth_earn(req: EarnRequest):
+    db = _get_db()
+    row = db.execute("SELECT * FROM balances WHERE api_key = ?", (req.api_key,)).fetchone()
+    if not row:
+        db.close()
+        return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+    new_balance = row["credits"] + req.amount
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE balances SET credits = ?, total_earned = total_earned + ? WHERE api_key = ?",
+        (new_balance, req.amount, req.api_key),
+    )
+    db.execute(
+        """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
+           VALUES (NULL, ?, NULL, ?, 0, 0, ?, NULL, ?)""",
+        (req.api_key, req.amount, req.source, now),
+    )
+    db.commit()
+    db.close()
+    return {"success": True, "credits": new_balance}
+
+
+@app.get("/tollbooth/transactions/{api_key}")
+def tollbooth_transactions(api_key: str, limit: int = Query(50, ge=1)):
+    db = _get_db()
+    row = db.execute("SELECT api_key FROM balances WHERE api_key = ?", (api_key,)).fetchone()
+    if not row:
+        db.close()
+        return JSONResponse(status_code=404, content={"error": "Invalid API key"})
+    rows = db.execute(
+        "SELECT * FROM transactions WHERE from_key = ? OR to_key = ? ORDER BY timestamp DESC LIMIT ?",
+        (api_key, api_key, limit),
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+@app.get("/tollbooth/stats")
+def tollbooth_stats():
+    db = _get_db()
+    total_accounts = db.execute("SELECT COUNT(*) FROM balances").fetchone()[0]
+    total_credits = db.execute("SELECT COALESCE(SUM(credits), 0) FROM balances").fetchone()[0]
+    total_transactions = db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    db.close()
+    return {
+        "total_accounts": total_accounts,
+        "total_credits_in_circulation": total_credits,
+        "total_transactions": total_transactions,
+    }
 
 
 if __name__ == "__main__":
