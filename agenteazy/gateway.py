@@ -205,28 +205,19 @@ _tollbooth_logger = logging.getLogger("agenteazy.tollbooth")
 
 def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
     """Check whether the caller can afford this agent. Fail-open on errors."""
-    print(f"TOLLBOOTH CHECK: agent={agent_name}, auth={auth_token}")
     try:
         config_path = os.path.join(AGENTS_ROOT, agent_name, "agent.json")
-        print(f"TOLLBOOTH PATH: {config_path}, exists={os.path.isfile(config_path)}")
         if not os.path.isfile(config_path):
-            print("TOLLBOOTH: agent.json not found — treating as free")
             return {"ok": True, "free": True}
 
         with open(config_path) as f:
             config = json.load(f)
-        print(f"TOLLBOOTH CONFIG: {config}")
-
         pricing = config.get("pricing")
-        print(f"TOLLBOOTH PRICING: {pricing}")
         credits_per_call = pricing.get("credits_per_call", 0) if isinstance(pricing, dict) else 0
-        print(f"TOLLBOOTH CREDITS_PER_CALL: {credits_per_call}")
         if not pricing or credits_per_call <= 0:
-            print("TOLLBOOTH: no pricing or zero cost — treating as free")
             return {"ok": True, "free": True}
 
         if not auth_token:
-            print("TOLLBOOTH: paid agent but no auth token provided")
             return {
                 "ok": False,
                 "error": f"This agent charges {credits_per_call} credits per call. "
@@ -234,47 +225,37 @@ def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
             }
 
         registry_url = _get_registry_url()
-        print(f"TOLLBOOTH REGISTRY_URL: {registry_url}")
         if not registry_url:
-            print("TOLLBOOTH: no registry URL configured — letting call through")
             _tollbooth_logger.warning("No registry URL configured — letting call through")
             return {"ok": True, "free": True}
 
         url = f"{registry_url.rstrip('/')}/tollbooth/balance/{auth_token}"
-        print(f"TOLLBOOTH BALANCE URL: {url}")
         req = urllib.request.Request(url)
         resp = urllib.request.urlopen(req, timeout=10)
         data = json.loads(resp.read().decode())
-        print(f"TOLLBOOTH BALANCE RESPONSE: {data}")
 
         balance = data.get("credits", 0)
         if balance < credits_per_call:
-            print(f"TOLLBOOTH: insufficient credits — balance={balance}, cost={credits_per_call}")
             return {
                 "ok": False,
                 "error": f"Insufficient credits. Balance: {balance}, Cost: {credits_per_call}. "
                          f"Buy more: agenteazy topup",
             }
 
-        print(f"TOLLBOOTH: approved — balance={balance}, cost={credits_per_call}")
         return {"ok": True, "free": False, "credits_per_call": credits_per_call, "balance": balance}
 
     except urllib.error.HTTPError as e:
         if e.code == 404:
-            print(f"TOLLBOOTH ERROR: 404 from registry — invalid API key (url attempted: {e.url if hasattr(e, 'url') else 'unknown'})")
             return {"ok": False, "error": "Invalid API key"}
-        print(f"TOLLBOOTH ERROR (HTTPError): code={e.code}, reason={e.reason}")
         _tollbooth_logger.error("TollBooth check failed: %s", e)
         return {"ok": True, "free": True}
     except Exception as e:
-        print(f"TOLLBOOTH ERROR (Exception): {type(e).__name__}: {e}")
         _tollbooth_logger.error("TollBooth check failed: %s", e)
         return {"ok": True, "free": True}
 
 
 def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> dict:
     """Deduct credits from caller, pay the developer, record platform fee. Fail-open."""
-    print(f"TOLLBOOTH DEDUCT: auth={auth_token}, agent={agent_name}, credits={credits_per_call}")
     try:
         registry_url = _get_registry_url()
         if not registry_url:
@@ -396,9 +377,7 @@ async def agent_ask(agent_name: str, request: Request, body: dict = None):
 
     # TollBooth: check credits before executing
     auth = (body or {}).get("auth") or request.headers.get("x-api-key")
-    print(f"TOLLBOOTH /ask: agent={agent_name}, auth={auth}")
     toll = _check_tollbooth(agent_name, auth)
-    print(f"TOLLBOOTH /ask RESULT: {toll}")
     if not toll.get("ok"):
         return JSONResponse(status_code=402, content={"error": toll["error"]})
 
@@ -417,7 +396,6 @@ async def agent_ask(agent_name: str, request: Request, body: dict = None):
 
     # Deduct after successful execution for paid agents
     if not toll.get("free"):
-        print(f"TOLLBOOTH /ask DEDUCTING: agent={agent_name}, credits={toll['credits_per_call']}")
         _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
 
     return result
@@ -434,9 +412,7 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 
     # TollBooth: check credits before executing
     auth = (body or {}).get("auth") or request.headers.get("x-api-key")
-    print(f"TOLLBOOTH /do: agent={agent_name}, auth={auth}")
     toll = _check_tollbooth(agent_name, auth)
-    print(f"TOLLBOOTH /do RESULT: {toll}")
     if not toll.get("ok"):
         return JSONResponse(status_code=402, content={"error": toll["error"]})
 
@@ -462,7 +438,6 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 
         # Deduct after successful execution for paid agents
         if not toll.get("free"):
-            print(f"TOLLBOOTH /do DEDUCTING: agent={agent_name}, credits={toll['credits_per_call']}")
             _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
 
         return {"status": "completed", "output": result}
@@ -509,23 +484,19 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
 
         # TollBooth: check credits before executing
         auth = body.get("auth") or request.headers.get("x-api-key")
-        print(f"TOLLBOOTH UNIVERSAL: agent={agent_name}, verb={verb}, auth={auth}")
 
         # PAY is a free verb — skip billing, credits are transferred explicitly
         if verb == "PAY":
             result = _handle_verb(agent_name, verb, payload, auth=auth)
         else:
             toll = _check_tollbooth(agent_name, auth)
-            print(f"TOLLBOOTH RESULT: {toll}")
             if not toll.get("ok"):
-                print(f"TOLLBOOTH BLOCKED: {toll.get('error')}")
                 return JSONResponse(status_code=402, content={"error": toll["error"]})
 
             result = _handle_verb(agent_name, verb, payload)
 
             # Deduct after successful execution for paid agents
             if toll.get("ok") and not toll.get("free"):
-                print(f"TOLLBOOTH DEDUCTING: agent={agent_name}, credits={toll['credits_per_call']}")
                 _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
 
         _log_call(agent_name, verb, "success")
