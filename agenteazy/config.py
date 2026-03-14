@@ -50,3 +50,20 @@ def set_gateway_url(url: str) -> None:
     cfg = load_config()
     cfg["gateway_url"] = url
     save_config(cfg)
+
+
+def get_api_key() -> str | None:
+    """Return the stored API key, or None."""
+    return load_config().get("api_key")
+
+
+def set_api_key(key: str) -> None:
+    """Store the API key."""
+    cfg = load_config()
+    cfg["api_key"] = key
+    save_config(cfg)
+
+
+def get_config() -> dict:
+    """Return the full config dict."""
+    return load_config()

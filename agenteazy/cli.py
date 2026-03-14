@@ -75,6 +75,8 @@ def _handle_error(e: Exception, context: str = "") -> None:
 
 def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: str, analysis) -> bool:
     """POST agent details to the registry. Returns True on success."""
+    from agenteazy.config import get_api_key
+
     entry = agent_config.get("entry", {})
     payload = {
         "name": agent_config.get("name", analysis.repo_name),
@@ -86,6 +88,9 @@ def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: s
         "entry_file": entry.get("file", ""),
         "tags": agent_config.get("tags", []),
     }
+    api_key = get_api_key()
+    if api_key:
+        payload["owner_api_key"] = api_key
     data = json.dumps(payload).encode()
     url = f"{registry_url.rstrip('/')}/registry/register"
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")
@@ -150,7 +155,10 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
 
 
 @app.command()
-def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand")):
+def wrap(
+    repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand"),
+    price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
+):
     """Analyze a repo, generate agent.json and a FastAPI wrapper."""
     console.print(f"\n[bold blue]Wrapping[/bold blue] {repo_url}...\n")
 
@@ -180,6 +188,12 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
     # Step 2: Generate agent.json (with version auto-increment)
     console.print("[dim]Step 2/3: Generating agent.json...[/dim]")
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
+
+    # Inject pricing if --price flag was provided
+    if price is not None and price > 0:
+        from agenteazy.generator import add_pricing
+        add_pricing(agent_config, price)
+        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
 
     # Step 3: Generate wrapper
     console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
@@ -236,6 +250,7 @@ def deploy(
     port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
+    price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
     from agenteazy.config import get_gateway_url, get_registry_url
@@ -267,6 +282,13 @@ def deploy(
 
     console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
+
+    # Inject pricing if --price flag was provided
+    if price is not None and price > 0:
+        from agenteazy.generator import add_pricing
+        add_pricing(agent_config, price)
+        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
+
     try:
         wrapper_code = generate_wrapper(agent_config, analysis.local_path)
     except ValueError as e:
@@ -886,6 +908,122 @@ def gateway_status():
     except Exception as e:
         console.print(f"[yellow]Could not list agents:[/yellow] {e}")
 
+    console.print()
+
+
+# ── Tollbooth CLI commands ────────────────────────────────────────────
+
+@app.command()
+def signup(
+    github_username: str = typer.Argument(..., help="Your GitHub username"),
+    email: str = typer.Option(..., "--email", "-e", help="Your email address"),
+):
+    """Sign up for an AgentEazy account and get an API key."""
+    from agenteazy.config import get_registry_url, set_api_key
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/signup"
+    payload = json.dumps({"github_username": github_username, "email": email}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            console.print("[yellow]Account already exists for this GitHub username.[/yellow]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    api_key = data["api_key"]
+    set_api_key(api_key)
+    console.print(f"[bold green]Welcome![/bold green] Your API key: [cyan]{api_key}[/cyan] (saved to config). You have [bold]50[/bold] starter credits.")
+
+
+@app.command()
+def balance():
+    """Check your credit balance."""
+    from agenteazy.config import get_registry_url, get_api_key
+
+    api_key = get_api_key()
+    if not api_key:
+        console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
+        return
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/balance/{api_key}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            console.print("[bold red]Invalid API key.[/bold red]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Balance for {data.get('github_username', 'unknown')}")
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", justify="right")
+    table.add_row("Credits", str(data["credits"]))
+    table.add_row("Total Earned", str(data["total_earned"]))
+    table.add_row("Total Spent", str(data["total_spent"]))
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def transactions():
+    """Show recent transactions."""
+    from agenteazy.config import get_registry_url, get_api_key
+
+    api_key = get_api_key()
+    if not api_key:
+        console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
+        return
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/transactions/{api_key}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            console.print("[bold red]Invalid API key.[/bold red]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    if not data:
+        console.print("\n[yellow]No transactions yet.[/yellow]\n")
+        return
+
+    table = Table(title="Recent Transactions")
+    table.add_column("Type", style="bold cyan")
+    table.add_column("Agent", style="dim")
+    table.add_column("Credits", justify="right")
+    table.add_column("Timestamp", style="dim")
+
+    for tx in data:
+        table.add_row(
+            tx.get("type", ""),
+            tx.get("agent_name", "") or "-",
+            str(tx.get("credits", 0)),
+            tx.get("timestamp", ""),
+        )
+
+    console.print()
+    console.print(table)
     console.print()
 
 
