@@ -77,6 +77,12 @@ def generate_agent_json(analysis, output_dir: str | None = None) -> dict:
     return config
 
 
+def add_pricing(config: dict, credits_per_call: int) -> dict:
+    """Add pricing configuration to an agent config dict."""
+    config["pricing"] = {"model": "per_call", "credits_per_call": credits_per_call}
+    return config
+
+
 def save_agent_json(config: dict, output_dir: str) -> str:
     """
     Write agent.json to the output directory.

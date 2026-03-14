@@ -155,7 +155,10 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
 
 
 @app.command()
-def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand")):
+def wrap(
+    repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand"),
+    price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
+):
     """Analyze a repo, generate agent.json and a FastAPI wrapper."""
     console.print(f"\n[bold blue]Wrapping[/bold blue] {repo_url}...\n")
 
@@ -185,6 +188,12 @@ def wrap(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo 
     # Step 2: Generate agent.json (with version auto-increment)
     console.print("[dim]Step 2/3: Generating agent.json...[/dim]")
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
+
+    # Inject pricing if --price flag was provided
+    if price is not None and price > 0:
+        from agenteazy.generator import add_pricing
+        add_pricing(agent_config, price)
+        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
 
     # Step 3: Generate wrapper
     console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
@@ -241,6 +250,7 @@ def deploy(
     port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
+    price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
     from agenteazy.config import get_gateway_url, get_registry_url
@@ -272,6 +282,13 @@ def deploy(
 
     console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
+
+    # Inject pricing if --price flag was provided
+    if price is not None and price > 0:
+        from agenteazy.generator import add_pricing
+        add_pricing(agent_config, price)
+        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
+
     try:
         wrapper_code = generate_wrapper(agent_config, analysis.local_path)
     except ValueError as e:
