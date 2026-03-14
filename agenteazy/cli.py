@@ -889,5 +889,121 @@ def gateway_status():
     console.print()
 
 
+# ── Tollbooth CLI commands ────────────────────────────────────────────
+
+@app.command()
+def signup(
+    github_username: str = typer.Argument(..., help="Your GitHub username"),
+    email: str = typer.Option(..., "--email", "-e", help="Your email address"),
+):
+    """Sign up for an AgentEazy account and get an API key."""
+    from agenteazy.config import get_registry_url, set_api_key
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/signup"
+    payload = json.dumps({"github_username": github_username, "email": email}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 409:
+            console.print("[yellow]Account already exists for this GitHub username.[/yellow]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    api_key = data["api_key"]
+    set_api_key(api_key)
+    console.print(f"[bold green]Welcome![/bold green] Your API key: [cyan]{api_key}[/cyan] (saved to config). You have [bold]50[/bold] starter credits.")
+
+
+@app.command()
+def balance():
+    """Check your credit balance."""
+    from agenteazy.config import get_registry_url, get_api_key
+
+    api_key = get_api_key()
+    if not api_key:
+        console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
+        return
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/balance/{api_key}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            console.print("[bold red]Invalid API key.[/bold red]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    table = Table(title=f"Balance for {data.get('github_username', 'unknown')}")
+    table.add_column("Field", style="bold cyan")
+    table.add_column("Value", justify="right")
+    table.add_row("Credits", str(data["credits"]))
+    table.add_row("Total Earned", str(data["total_earned"]))
+    table.add_row("Total Spent", str(data["total_spent"]))
+    console.print()
+    console.print(table)
+    console.print()
+
+
+@app.command()
+def transactions():
+    """Show recent transactions."""
+    from agenteazy.config import get_registry_url, get_api_key
+
+    api_key = get_api_key()
+    if not api_key:
+        console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
+        return
+
+    registry_url = get_registry_url() or "http://localhost:8001"
+    url = f"{registry_url.rstrip('/')}/tollbooth/transactions/{api_key}"
+    try:
+        resp = urllib.request.urlopen(url, timeout=10)
+        data = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            console.print("[bold red]Invalid API key.[/bold red]")
+            return
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
+    except (urllib.error.URLError, OSError):
+        console.print("[bold red]Registry unavailable. Is it running?[/bold red]")
+        raise typer.Exit(code=1)
+
+    if not data:
+        console.print("\n[yellow]No transactions yet.[/yellow]\n")
+        return
+
+    table = Table(title="Recent Transactions")
+    table.add_column("Type", style="bold cyan")
+    table.add_column("Agent", style="dim")
+    table.add_column("Credits", justify="right")
+    table.add_column("Timestamp", style="dim")
+
+    for tx in data:
+        table.add_row(
+            tx.get("type", ""),
+            tx.get("agent_name", "") or "-",
+            str(tx.get("credits", 0)),
+            tx.get("timestamp", ""),
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+
 if __name__ == "__main__":
     app()
