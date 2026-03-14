@@ -75,6 +75,8 @@ def _handle_error(e: Exception, context: str = "") -> None:
 
 def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: str, analysis) -> bool:
     """POST agent details to the registry. Returns True on success."""
+    from agenteazy.config import get_api_key
+
     entry = agent_config.get("entry", {})
     payload = {
         "name": agent_config.get("name", analysis.repo_name),
@@ -86,6 +88,9 @@ def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: s
         "entry_file": entry.get("file", ""),
         "tags": agent_config.get("tags", []),
     }
+    api_key = get_api_key()
+    if api_key:
+        payload["owner_api_key"] = api_key
     data = json.dumps(payload).encode()
     url = f"{registry_url.rstrip('/')}/registry/register"
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"}, method="POST")

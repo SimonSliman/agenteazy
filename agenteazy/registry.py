@@ -38,6 +38,7 @@ class RegisterRequest(BaseModel):
     entry_function: Optional[str] = None
     entry_file: Optional[str] = None
     tags: Optional[list] = None
+    owner_api_key: Optional[str] = None
 
 
 # ── DB helpers ───────────────────────────────────────────────────────
@@ -61,6 +62,12 @@ def _get_db() -> sqlite3.Connection:
             status          TEXT DEFAULT 'active'
         )
     """)
+    # Add owner_api_key column if it doesn't exist yet
+    cursor = conn.execute("PRAGMA table_info(agents)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if "owner_api_key" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN owner_api_key TEXT")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS balances (
             api_key         TEXT PRIMARY KEY,
@@ -113,8 +120,8 @@ def register_agent(req: RegisterRequest):
     db.execute(
         """
         INSERT INTO agents (name, description, url, language, verbs,
-                            entry_function, entry_file, tags, created_at, last_seen, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+                            entry_function, entry_file, tags, created_at, last_seen, status, owner_api_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
         ON CONFLICT(name) DO UPDATE SET
             description    = excluded.description,
             url            = excluded.url,
@@ -124,7 +131,8 @@ def register_agent(req: RegisterRequest):
             entry_file     = excluded.entry_file,
             tags           = excluded.tags,
             last_seen      = excluded.last_seen,
-            status         = 'active'
+            status         = 'active',
+            owner_api_key  = excluded.owner_api_key
         """,
         (
             req.name,
@@ -137,6 +145,7 @@ def register_agent(req: RegisterRequest):
             json.dumps(req.tags or []),
             now,
             now,
+            req.owner_api_key,
         ),
     )
     db.commit()
@@ -167,6 +176,16 @@ def get_agent(name: str):
     if not row:
         raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return _row_to_dict(row)
+
+
+@app.get("/registry/agent/{name}/owner")
+def get_agent_owner(name: str):
+    db = _get_db()
+    row = db.execute("SELECT owner_api_key FROM agents WHERE name = ?", (name,)).fetchone()
+    db.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    return {"owner_api_key": row["owner_api_key"]}
 
 
 @app.get("/registry/all")
