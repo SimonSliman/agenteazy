@@ -9,10 +9,12 @@ Agent code is stored on a Modal Volume at /agents/{agent_name}/ with:
 
 import importlib.util
 import json
+import logging
 import os
 import sys
 import traceback
 import urllib.request
+import urllib.error
 import urllib.parse
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -196,6 +198,109 @@ def _merge_context(func, kwargs: dict, ctx: dict) -> dict:
     return merged
 
 
+# ── TollBooth helpers ──────────────────────────────────────────────────
+
+_tollbooth_logger = logging.getLogger("agenteazy.tollbooth")
+
+
+def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
+    """Check whether the caller can afford this agent. Fail-open on errors."""
+    try:
+        config_path = os.path.join(AGENTS_ROOT, agent_name, "agent.json")
+        if not os.path.isfile(config_path):
+            return {"ok": True, "free": True}
+
+        with open(config_path) as f:
+            config = json.load(f)
+
+        pricing = config.get("pricing")
+        credits_per_call = pricing.get("credits_per_call", 0) if isinstance(pricing, dict) else 0
+        if not pricing or credits_per_call <= 0:
+            return {"ok": True, "free": True}
+
+        if not auth_token:
+            return {
+                "ok": False,
+                "error": f"This agent charges {credits_per_call} credits per call. "
+                         f"Get your API key: agenteazy signup <github_username>",
+            }
+
+        registry_url = _get_registry_url()
+        if not registry_url:
+            _tollbooth_logger.warning("No registry URL configured — letting call through")
+            return {"ok": True, "free": True}
+
+        url = f"{registry_url.rstrip('/')}/tollbooth/balance/{auth_token}"
+        req = urllib.request.Request(url)
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+
+        balance = data.get("credits", 0)
+        if balance < credits_per_call:
+            return {
+                "ok": False,
+                "error": f"Insufficient credits. Balance: {balance}, Cost: {credits_per_call}. "
+                         f"Buy more: agenteazy topup",
+            }
+
+        return {"ok": True, "free": False, "credits_per_call": credits_per_call, "balance": balance}
+
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"ok": False, "error": "Invalid API key"}
+        _tollbooth_logger.error("TollBooth check failed: %s", e)
+        return {"ok": True, "free": True}
+    except Exception as e:
+        _tollbooth_logger.error("TollBooth check failed: %s", e)
+        return {"ok": True, "free": True}
+
+
+def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> dict:
+    """Deduct credits from the caller and record the platform fee. Fail-open."""
+    try:
+        registry_url = _get_registry_url()
+        if not registry_url:
+            return {}
+
+        platform_fee = int(credits_per_call * 0.20)
+
+        # Deduct from caller
+        deduct_url = f"{registry_url.rstrip('/')}/tollbooth/deduct"
+        deduct_payload = json.dumps({
+            "api_key": auth_token,
+            "agent_name": agent_name,
+            "amount": credits_per_call,
+        }).encode()
+        req = urllib.request.Request(
+            deduct_url, data=deduct_payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        deduct_result = json.loads(resp.read().decode())
+
+        # Record platform fee
+        if platform_fee > 0:
+            earn_url = f"{registry_url.rstrip('/')}/tollbooth/earn"
+            earn_payload = json.dumps({
+                "api_key": "platform",
+                "amount": platform_fee,
+                "source": "platform_fee",
+            }).encode()
+            earn_req = urllib.request.Request(
+                earn_url, data=earn_payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            try:
+                urllib.request.urlopen(earn_req, timeout=10)
+            except Exception as e:
+                _tollbooth_logger.warning("Failed to record platform fee: %s", e)
+
+        return {"deducted": credits_per_call, "remaining": deduct_result.get("remaining")}
+    except Exception as e:
+        _tollbooth_logger.error("Deduct failed: %s", e)
+        return {}
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────
 
 
@@ -241,11 +346,19 @@ async def agent_info(agent_name: str):
 
 
 @app.post("/agent/{agent_name}/ask")
-async def agent_ask(agent_name: str):
+async def agent_ask(agent_name: str, request: Request, body: dict = None):
     """Return an agent's capabilities."""
     await _refresh_volume()
+
+    # TollBooth: check credits before executing
+    auth = (body or {}).get("auth") or request.headers.get("x-api-key")
+    toll = _check_tollbooth(agent_name, auth)
+    if not toll.get("ok"):
+        return JSONResponse(status_code=402, content={"error": toll["error"]})
+
     func, config = _load_agent_func(agent_name)
-    return {
+
+    result = {
         "name": config.get("name", agent_name),
         "description": config.get("description", ""),
         "verbs": config.get("verbs", []),
@@ -256,6 +369,12 @@ async def agent_ask(agent_name: str):
         },
     }
 
+    # Deduct after successful execution for paid agents
+    if not toll.get("free"):
+        _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
+
+    return result
+
 
 @app.post("/agent/{agent_name}/do")
 async def agent_do(agent_name: str, request: Request, body: dict = None):
@@ -265,6 +384,12 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
     content_length = request.headers.get("content-length")
     if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
         raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+
+    # TollBooth: check credits before executing
+    auth = (body or {}).get("auth") or request.headers.get("x-api-key")
+    toll = _check_tollbooth(agent_name, auth)
+    if not toll.get("ok"):
+        return JSONResponse(status_code=402, content={"error": toll["error"]})
 
     func, config = _load_agent_func(agent_name)
     entry_args = config["entry"]["args"]
@@ -285,6 +410,11 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
             # Context kwargs not accepted — retry without context
             future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
             result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+
+        # Deduct after successful execution for paid agents
+        if not toll.get("free"):
+            _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
+
         return {"status": "completed", "output": result}
     except FuturesTimeoutError:
         future.cancel()
@@ -327,7 +457,18 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
                 content={"error": "Unknown verb", "valid_verbs": VALID_VERBS},
             )
 
+        # TollBooth: check credits before executing
+        auth = body.get("auth") or request.headers.get("x-api-key")
+        toll = _check_tollbooth(agent_name, auth)
+        if not toll.get("ok"):
+            return JSONResponse(status_code=402, content={"error": toll["error"]})
+
         result = _handle_verb(agent_name, verb, payload)
+
+        # Deduct after successful execution for paid agents
+        if toll.get("ok") and not toll.get("free"):
+            _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
+
         _log_call(agent_name, verb, "success")
         return result
     except HTTPException:
@@ -423,7 +564,7 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
         return {"status": "acknowledged", "subscription_id": str(uuid4()), "message": "Webhooks coming soon"}
 
     if verb == "PAY":
-        return {"status": "acknowledged", "message": "TollBooth not yet active"}
+        return {"status": "acknowledged", "message": "TollBooth active — credits checked automatically"}
 
     if verb == "TRUST":
         return {"status": "acknowledged", "message": "AgentPass not yet active"}
