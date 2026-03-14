@@ -190,10 +190,8 @@ def wrap(
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
 
     # Inject pricing if --price flag was provided
-    if price is not None and price > 0:
-        from agenteazy.generator import add_pricing
-        add_pricing(agent_config, price)
-        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
+    if price and price > 0:
+        agent_config["pricing"] = {"model": "per_call", "credits_per_call": price}
 
     # Step 3: Generate wrapper
     console.print("[dim]Step 3/3: Generating FastAPI wrapper...[/dim]")
@@ -284,10 +282,8 @@ def deploy(
     agent_config = generate_agent_json(analysis, output_dir=output_dir)
 
     # Inject pricing if --price flag was provided
-    if price is not None and price > 0:
-        from agenteazy.generator import add_pricing
-        add_pricing(agent_config, price)
-        console.print(f"[dim]  Pricing set: {price} credits per call[/dim]")
+    if price and price > 0:
+        agent_config["pricing"] = {"model": "per_call", "credits_per_call": price}
 
     try:
         wrapper_code = generate_wrapper(agent_config, analysis.local_path)
