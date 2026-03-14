@@ -5,7 +5,6 @@
 Open source · MIT Licensed · [agenteazy.com](https://agenteazy.com)
 
 ## Quick Start
-
 ```bash
 pip install agenteazy
 agenteazy signup <your-github-username>
@@ -13,7 +12,6 @@ agenteazy deploy github.com/you/your-repo
 ```
 
 Your repo is now a live agent. Call it:
-
 ```bash
 curl -X POST https://gateway.agenteazy.com/agent/your-repo/ \
   -H "Content-Type: application/json" \
@@ -37,7 +35,7 @@ AgentEazy wraps any Python repository as a discoverable, callable AI agent that 
 | `agenteazy wrap <repo>` | Generate agent.json + wrapper |
 | `agenteazy deploy <repo>` | Deploy to gateway + register |
 | `agenteazy deploy <repo> --local` | Test locally |
-| `agenteazy deploy <repo> --price 10` | Deploy as paid agent (10 credits/call) |
+| `agenteazy deploy <repo> --price 10` | Deploy as paid agent |
 | `agenteazy signup <username>` | Create account, get API key |
 | `agenteazy balance` | Check credit balance |
 | `agenteazy transactions` | View transaction history |
@@ -55,7 +53,6 @@ AgentEazy wraps any Python repository as a discoverable, callable AI agent that 
 ## AgentLang — 10 Universal Verbs
 
 Every agent speaks the same protocol. One HTTP POST, one envelope:
-
 ```json
 {"verb": "DO", "auth": null, "payload": {"task": "process", "data": {"input": "hello"}}}
 ```
@@ -76,30 +73,28 @@ Every agent speaks the same protocol. One HTTP POST, one envelope:
 ## TollBooth — Agent Credits
 
 Agents can charge credits per call. Developers earn 80%, platform keeps 20% for infrastructure.
-
 ```bash
 agenteazy deploy github.com/you/ml-model --price 10
 ```
 
-No billing code needed. Set a price and the gateway handles everything. Sign in at [agenteazy.com](https://agenteazy.com) to manage your balance.
+No billing code needed. Set a price and the gateway handles everything.
 
 ## Architecture
-
 ```
-agenteazy deploy <repo>
-│
-├── 1. ANALYZE  → Clone, detect Python, parse AST
-├── 2. WRAP     → Generate agent.json + FastAPI wrapper
-├── 3. UPLOAD   → Push to serverless volume
-├── 4. REGISTER → Add to public registry
-└── 5. LIVE     → Callable at gateway/agent/{name}/
+Developer: agenteazy deploy <repo>
+    |
+    |-- 1. ANALYZE  -> Clone, detect Python, parse AST
+    |-- 2. WRAP     -> Generate agent.json + FastAPI wrapper
+    |-- 3. UPLOAD   -> Push to serverless volume
+    |-- 4. REGISTER -> Add to public registry
+    +-- 5. LIVE     -> Callable at gateway/agent/{name}/
 
-Gateway (1 endpoint) ──── Registry (SQLite)
-│                         │
-└── Agent Volume          └── TollBooth (credits)
-    /agents/repo-a/           /tollbooth/balance
-    /agents/repo-b/           /tollbooth/deduct
-    /agents/repo-c/           /tollbooth/earn
+Gateway (1 endpoint) ---- Registry (SQLite)
+    |                          |
+    +-- Agent Volume           +-- TollBooth (credits)
+        /agents/repo-a/            /tollbooth/balance
+        /agents/repo-b/            /tollbooth/deduct
+        /agents/repo-c/            /tollbooth/earn
 ```
 
 ## Dashboard
