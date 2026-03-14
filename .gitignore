@@ -1,8 +1,12 @@
 __pycache__/
+*.pyc
 *.py[cod]
+.env
+agenteazy-output/
 *.egg-info/
+*.egg
 dist/
 build/
-*.egg
-agenteazy-output/
+.agenteazy/
 agenteazy-registry.db
+poetry.lock
