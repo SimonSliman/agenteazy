@@ -256,42 +256,68 @@ def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
 
 
 def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> dict:
-    """Deduct credits from the caller and record the platform fee. Fail-open."""
+    """Deduct credits from caller, pay the developer, record platform fee. Fail-open."""
     try:
         registry_url = _get_registry_url()
         if not registry_url:
             return {}
 
+        base = registry_url.rstrip("/")
         platform_fee = int(credits_per_call * 0.20)
+        developer_credit = credits_per_call - platform_fee
 
         # Deduct from caller
-        deduct_url = f"{registry_url.rstrip('/')}/tollbooth/deduct"
         deduct_payload = json.dumps({
             "api_key": auth_token,
             "agent_name": agent_name,
             "amount": credits_per_call,
         }).encode()
         req = urllib.request.Request(
-            deduct_url, data=deduct_payload,
+            f"{base}/tollbooth/deduct", data=deduct_payload,
             headers={"Content-Type": "application/json"}, method="POST",
         )
         resp = urllib.request.urlopen(req, timeout=10)
         deduct_result = json.loads(resp.read().decode())
 
+        # Look up agent owner
+        owner_api_key = None
+        try:
+            owner_req = urllib.request.Request(f"{base}/registry/agent/{agent_name}/owner")
+            owner_resp = urllib.request.urlopen(owner_req, timeout=10)
+            owner_data = json.loads(owner_resp.read().decode())
+            owner_api_key = owner_data.get("owner_api_key")
+        except Exception as e:
+            _tollbooth_logger.warning("Failed to look up agent owner: %s", e)
+
+        # Pay the developer if owner is known
+        if owner_api_key and developer_credit > 0:
+            try:
+                earn_payload = json.dumps({
+                    "api_key": owner_api_key,
+                    "amount": developer_credit,
+                    "source": "agent_revenue",
+                }).encode()
+                earn_req = urllib.request.Request(
+                    f"{base}/tollbooth/earn", data=earn_payload,
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                urllib.request.urlopen(earn_req, timeout=10)
+            except Exception as e:
+                _tollbooth_logger.warning("Failed to credit developer: %s", e)
+
         # Record platform fee
         if platform_fee > 0:
-            earn_url = f"{registry_url.rstrip('/')}/tollbooth/earn"
-            earn_payload = json.dumps({
-                "api_key": "platform",
-                "amount": platform_fee,
-                "source": "platform_fee",
-            }).encode()
-            earn_req = urllib.request.Request(
-                earn_url, data=earn_payload,
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
             try:
-                urllib.request.urlopen(earn_req, timeout=10)
+                fee_payload = json.dumps({
+                    "api_key": "ae_platform",
+                    "amount": platform_fee,
+                    "source": "platform_fee",
+                }).encode()
+                fee_req = urllib.request.Request(
+                    f"{base}/tollbooth/earn", data=fee_payload,
+                    headers={"Content-Type": "application/json"}, method="POST",
+                )
+                urllib.request.urlopen(fee_req, timeout=10)
             except Exception as e:
                 _tollbooth_logger.warning("Failed to record platform fee: %s", e)
 
