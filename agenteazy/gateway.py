@@ -510,18 +510,23 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         # TollBooth: check credits before executing
         auth = body.get("auth") or request.headers.get("x-api-key")
         print(f"TOLLBOOTH UNIVERSAL: agent={agent_name}, verb={verb}, auth={auth}")
-        toll = _check_tollbooth(agent_name, auth)
-        print(f"TOLLBOOTH RESULT: {toll}")
-        if not toll.get("ok"):
-            print(f"TOLLBOOTH BLOCKED: {toll.get('error')}")
-            return JSONResponse(status_code=402, content={"error": toll["error"]})
 
-        result = _handle_verb(agent_name, verb, payload)
+        # PAY is a free verb — skip billing, credits are transferred explicitly
+        if verb == "PAY":
+            result = _handle_verb(agent_name, verb, payload, auth=auth)
+        else:
+            toll = _check_tollbooth(agent_name, auth)
+            print(f"TOLLBOOTH RESULT: {toll}")
+            if not toll.get("ok"):
+                print(f"TOLLBOOTH BLOCKED: {toll.get('error')}")
+                return JSONResponse(status_code=402, content={"error": toll["error"]})
 
-        # Deduct after successful execution for paid agents
-        if toll.get("ok") and not toll.get("free"):
-            print(f"TOLLBOOTH DEDUCTING: agent={agent_name}, credits={toll['credits_per_call']}")
-            _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
+            result = _handle_verb(agent_name, verb, payload)
+
+            # Deduct after successful execution for paid agents
+            if toll.get("ok") and not toll.get("free"):
+                print(f"TOLLBOOTH DEDUCTING: agent={agent_name}, credits={toll['credits_per_call']}")
+                _deduct_and_pay(auth, agent_name, toll["credits_per_call"])
 
         _log_call(agent_name, verb, "success")
         return result
@@ -539,7 +544,7 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         )
 
 
-def _handle_verb(agent_name: str, verb: str, payload: dict):
+def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
     """Dispatch a verb to the appropriate handler."""
 
     if verb == "ASK":
@@ -618,7 +623,73 @@ def _handle_verb(agent_name: str, verb: str, payload: dict):
         return {"status": "acknowledged", "subscription_id": str(uuid4()), "message": "Webhooks coming soon"}
 
     if verb == "PAY":
-        return {"status": "acknowledged", "message": "TollBooth active — credits checked automatically"}
+        try:
+            auth_token = extra.get("auth")
+            if not auth_token:
+                return {"status": "error", "message": "PAY requires authentication. Pass your API key in the auth field."}
+
+            to_agent = payload.get("data", {}).get("to_agent") or payload.get("to_agent")
+            if not to_agent:
+                return {"status": "error", "message": "PAY requires to_agent in payload.data"}
+
+            credits = payload.get("data", {}).get("credits") or payload.get("credits")
+            if not credits or credits <= 0:
+                return {"status": "error", "message": "PAY requires a positive credits amount in payload.data"}
+
+            if credits > 1000:
+                return {"status": "error", "message": "Maximum transfer is 1000 credits per transaction"}
+
+            registry_url = _get_registry_url()
+            if not registry_url:
+                return {"status": "error", "message": "No registry URL configured"}
+            base = registry_url.rstrip("/")
+
+            # Check sender balance
+            bal_req = urllib.request.Request(f"{base}/tollbooth/balance/{auth_token}")
+            bal_resp = urllib.request.urlopen(bal_req, timeout=5)
+            bal_data = json.loads(bal_resp.read().decode())
+            balance = bal_data.get("credits", 0)
+            if balance < credits:
+                return {"status": "error", "message": f"Insufficient credits. Balance: {balance}"}
+
+            # Deduct from sender
+            deduct_payload = json.dumps({
+                "api_key": auth_token,
+                "agent_name": to_agent,
+                "amount": credits,
+            }).encode()
+            deduct_req = urllib.request.Request(
+                f"{base}/tollbooth/deduct", data=deduct_payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            deduct_resp = urllib.request.urlopen(deduct_req, timeout=5)
+            deduct_data = json.loads(deduct_resp.read().decode())
+            remaining = deduct_data.get("remaining", balance - credits)
+
+            # Look up owner of to_agent
+            owner_req = urllib.request.Request(f"{base}/registry/agent/{to_agent}/owner")
+            owner_resp = urllib.request.urlopen(owner_req, timeout=5)
+            owner_data = json.loads(owner_resp.read().decode())
+            owner_key = owner_data.get("owner_api_key")
+
+            if not owner_key:
+                return {"status": "error", "message": f"Agent {to_agent} has no registered owner to receive credits"}
+
+            # Credit the recipient
+            earn_payload = json.dumps({
+                "api_key": owner_key,
+                "amount": credits,
+                "source": "pay_transfer",
+            }).encode()
+            earn_req = urllib.request.Request(
+                f"{base}/tollbooth/earn", data=earn_payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            urllib.request.urlopen(earn_req, timeout=5)
+
+            return {"status": "completed", "transferred": credits, "to": to_agent, "remaining_balance": remaining}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
 
     if verb == "TRUST":
         return {"status": "acknowledged", "message": "AgentPass not yet active"}
