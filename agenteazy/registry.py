@@ -252,6 +252,10 @@ class SignupRequest(BaseModel):
     email: str
 
 
+class RecoverRequest(BaseModel):
+    github_username: str
+
+
 class DeductRequest(BaseModel):
     api_key: str
     agent_name: str
@@ -286,12 +290,16 @@ def tollbooth_signup(req: SignupRequest, request: Request):
             return JSONResponse(status_code=409, content={"error": "Email already registered"})
 
     existing = db.execute(
-        "SELECT api_key FROM balances WHERE github_username = ?",
+        "SELECT api_key, credits FROM balances WHERE github_username = ?",
         (req.github_username,),
     ).fetchone()
     if existing:
         db.close()
-        return JSONResponse(status_code=409, content={"error": "Account already exists"})
+        return JSONResponse(status_code=409, content={
+            "error": "Account already exists",
+            "api_key": existing["api_key"],
+            "credits": existing["credits"],
+        })
 
     # Rate limit signups: max 5 per IP per hour
     client_ip = request.client.host if request.client else "unknown"
@@ -319,6 +327,19 @@ def tollbooth_signup(req: SignupRequest, request: Request):
     db.commit()
     db.close()
     return {"api_key": api_key, "credits": 50, "github_username": req.github_username}
+
+
+@app.post("/tollbooth/recover")
+def tollbooth_recover(req: RecoverRequest):
+    db = _get_db()
+    row = db.execute(
+        "SELECT api_key, credits, github_username FROM balances WHERE github_username = ?",
+        (req.github_username,),
+    ).fetchone()
+    db.close()
+    if not row:
+        return JSONResponse(status_code=404, content={"error": "No account found for this username"})
+    return {"api_key": row["api_key"], "credits": row["credits"], "github_username": row["github_username"]}
 
 
 @app.get("/tollbooth/balance/{api_key}")
