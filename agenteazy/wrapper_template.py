@@ -5,6 +5,8 @@ import inspect
 import json
 import os
 
+from agenteazy.agentlang import VALID_VERBS as _CANONICAL_VERBS
+
 
 def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     """
@@ -64,7 +66,7 @@ FUNCTION_TIMEOUT_SECONDS = 25
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # --- AgentLang protocol ---
-VALID_VERBS = ["ASK", "DO", "FIND", "PAY", "WATCH", "STOP", "TRUST", "SHARE", "LEARN", "REPORT"]
+VALID_VERBS = {_CANONICAL_VERBS}
 _call_log = deque(maxlen=50)
 _agent_context = {{}}
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import Field
 
+from agenteazy.config import DEFAULT_GATEWAY_URL, DEFAULT_REGISTRY_URL
 from agenteazy.sdk import AgentEazy, AgentEazyError
 
 
@@ -30,8 +31,8 @@ class AgentEazyTool(BaseTool):
     def from_agent(
         cls,
         agent_name: str,
-        registry_url: str = "https://simondusable--agenteazy-registry-serve.modal.run",
-        gateway_url: str = "https://simondusable--agenteazy-gateway-serve.modal.run",
+        registry_url: str = DEFAULT_REGISTRY_URL,
+        gateway_url: str = DEFAULT_GATEWAY_URL,
         api_key: str | None = None,
         description_override: str | None = None,
     ) -> "AgentEazyTool":
@@ -104,8 +105,8 @@ class AgentEazyToolkit:
 
     def __init__(
         self,
-        registry_url: str = "https://simondusable--agenteazy-registry-serve.modal.run",
-        gateway_url: str = "https://simondusable--agenteazy-gateway-serve.modal.run",
+        registry_url: str = DEFAULT_REGISTRY_URL,
+        gateway_url: str = DEFAULT_GATEWAY_URL,
         api_key: str | None = None,
     ):
         self.registry_url = registry_url
