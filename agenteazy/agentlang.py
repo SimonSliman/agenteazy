@@ -1,26 +1,35 @@
-"""AgentLang — universal 10-verb protocol for agent communication."""
+"""AgentLang — the 10-verb protocol for agent communication."""
 
-VERBS = {
-    "ASK": {"description": "Query without changing state", "http_equiv": "GET", "requires_auth": False},
-    "DO": {"description": "Execute a task, may change state", "http_equiv": "POST", "requires_auth": False},
-    "FIND": {"description": "Search for agents or data", "http_equiv": "GET", "requires_auth": False},
-    "PAY": {"description": "Transfer credits for service", "http_equiv": "POST", "requires_auth": True},
-    "WATCH": {"description": "Subscribe to changes", "http_equiv": "POST", "requires_auth": False},
-    "STOP": {"description": "Halt current task", "http_equiv": "DELETE", "requires_auth": False},
-    "TRUST": {"description": "Establish authenticated session", "http_equiv": "POST", "requires_auth": False},
-    "SHARE": {"description": "Pass context between agents", "http_equiv": "POST", "requires_auth": False},
-    "LEARN": {"description": "Ingest new knowledge", "http_equiv": "POST", "requires_auth": True},
-    "REPORT": {"description": "Get audit log of actions", "http_equiv": "GET", "requires_auth": False},
+VALID_VERBS = [
+    "ASK", "DO", "FIND", "PAY", "WATCH",
+    "STOP", "TRUST", "SHARE", "LEARN", "REPORT",
+]
+
+VERB_DESCRIPTIONS = {
+    "DO": "Execute a task",
+    "ASK": "Query capabilities",
+    "FIND": "Search the registry",
+    "PAY": "Transfer credits between agents",
+    "SHARE": "Pass context to an agent",
+    "REPORT": "Get audit log and recent calls",
+    "STOP": "Halt a running task",
+    "WATCH": "Subscribe to events (coming soon)",
+    "TRUST": "Establish authenticated session (coming soon)",
+    "LEARN": "Ingest new knowledge (coming soon)",
 }
 
-VALID_VERBS = list(VERBS.keys())
+IMPLEMENTED_VERBS = ["ASK", "DO", "FIND", "PAY", "SHARE", "REPORT", "STOP"]
+STUB_VERBS = ["WATCH", "TRUST", "LEARN"]
 
 
 def validate_verb(verb: str) -> bool:
     """Check whether the given verb is one of the 10 AgentLang verbs."""
-    return verb.upper() in VERBS
+    return verb.upper() in VALID_VERBS
 
 
 def get_verb_info(verb: str) -> dict:
-    """Return metadata for a verb, or empty dict if unknown."""
-    return VERBS.get(verb.upper(), {})
+    """Return description for a verb, or empty dict if unknown."""
+    desc = VERB_DESCRIPTIONS.get(verb.upper())
+    if desc:
+        return {"description": desc}
+    return {}

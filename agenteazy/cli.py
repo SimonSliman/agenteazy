@@ -16,7 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from agenteazy.analyzer import analyze_repo, DetectedFunction
-from agenteazy.deployer import deploy_local, test_agent
+from agenteazy.local_deployer import deploy_local, test_agent
 from agenteazy.modal_deployer import (
     check_modal_auth,
     deploy_to_modal,
