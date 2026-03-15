@@ -22,6 +22,7 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     entry_function = agent_config["entry"]["function"]
     entry_args = agent_config["entry"]["args"]
     entry_class_name = agent_config["entry"].get("class_name")
+    python_root = agent_config.get("python_root", ".")
 
     if not entry_file or not entry_function:
         raise ValueError(
@@ -29,17 +30,14 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
             "Edit agent.json to set entry.file and entry.function."
         )
 
-    # Compute module name from file path
-    entry_module = entry_file.replace(".py", "").replace("/", ".").replace(os.sep, ".")
+    # Compute module name from file path, stripping python_root prefix
+    module_path = entry_file
+    if python_root != "." and module_path.startswith(python_root + "/"):
+        module_path = module_path[len(python_root) + 1:]
+    entry_module = module_path.replace(".py", "").replace("/", ".").replace(os.sep, ".")
 
     # Use repr() for safe embedding of the config JSON string
     config_json_repr = repr(json.dumps(agent_config))
-
-    # Build the argument unpacking for the entry function call
-    if entry_args:
-        call_args = ", ".join(f'{a}=payload.get("{a}")' for a in entry_args)
-    else:
-        call_args = ""
 
     code = f'''"""Auto-generated FastAPI wrapper for {name}."""
 
@@ -75,13 +73,42 @@ def _log_call(verb, status):
     _call_log.append({{"verb": verb, "timestamp": datetime.now(timezone.utc).isoformat(), "status": status}})
 
 
+def _dispatch(func, payload):
+    """Dynamically map payload keys to function parameters."""
+    sig = inspect.signature(func)
+    kwargs = {{}}
+    extra = dict(payload)  # copy so we can pop consumed keys
+
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            # **kwargs — will receive all remaining payload
+            continue
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            # *args — skip, we use keyword dispatch
+            continue
+        if name in extra:
+            kwargs[name] = extra.pop(name)
+        elif param.default is inspect.Parameter.empty:
+            # Required param not in payload — include as None with warning
+            kwargs[name] = None
+
+    # If function accepts **kwargs, pass remaining payload
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            kwargs.update(extra)
+            break
+
+    return func(**kwargs)
+
+
 # --- Agent config ---
 AGENT_CONFIG = json.loads({config_json_repr})
 
 
 # --- Load the wrapped module ---
 REPO_PATH = os.environ.get("AGENTEAZY_REPO_PATH", os.path.join(os.path.dirname(__file__), "repo"))
-sys.path.insert(0, REPO_PATH)
+PYTHON_ROOT = os.path.join(REPO_PATH, "{python_root}")
+sys.path.insert(0, PYTHON_ROOT)
 
 ENTRY_MODULE = "{entry_module}"
 ENTRY_FUNCTION = "{entry_function}"
@@ -215,7 +242,7 @@ async def do(request: Request, body: dict = None):
         raise HTTPException(status_code=500, detail=f"Failed to load agent: {{type(e).__name__}}: {{e}}")
 
     try:
-        future = _executor.submit(func, {call_args})
+        future = _executor.submit(_dispatch, func, payload)
         result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
         return {{"status": "completed", "output": result}}
     except FuturesTimeoutError:
@@ -285,16 +312,15 @@ def _handle_verb(verb, payload):
     if verb == "DO":
         func = _get_entry_func()
         data = payload.get("data", {{}})
-        kwargs = {{{", ".join(f'"{a}": data.get("{a}")' for a in entry_args)}}} if {bool(entry_args)} else {{}}
         # Inject shared context if function accepts **kwargs
         if _agent_context:
             sig = inspect.signature(func)
             for p in sig.parameters.values():
                 if p.kind == inspect.Parameter.VAR_KEYWORD:
-                    kwargs["_context"] = _agent_context
+                    data["_context"] = _agent_context
                     break
         try:
-            future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
+            future = _executor.submit(_dispatch, func, data)
             result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
             return {{"status": "completed", "output": result}}
         except FuturesTimeoutError:
