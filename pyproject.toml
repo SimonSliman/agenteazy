@@ -18,6 +18,8 @@ dependencies = [
 
 [project.optional-dependencies]
 langchain = ["langchain-core>=0.2.0"]
+crewai = ["crewai>=0.80.0"]
+all = ["langchain-core>=0.2.0", "crewai>=0.80.0"]
 
 [project.scripts]
 agenteazy = "agenteazy.cli:app"
