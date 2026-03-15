@@ -101,6 +101,8 @@ class AgentEazy:
             agents = client.find("password strength")
             # [{"name": "zxcvbn-python", "description": "...", ...}]
         """
+        if not query or not query.strip():
+            return self.list_agents()[:limit]
         encoded = urllib.parse.quote(query)
         url = f"{self.registry_url}/registry/search?q={encoded}"
         result = self._get(url)
@@ -139,6 +141,18 @@ class AgentEazy:
         try:
             return self._post(url, body, timeout=timeout)
         except AgentEazyError as e:
+            # On 404, try direct wrapper call at root / (supports both
+            # gateway routing and direct wrapper connections)
+            if e.status_code == 404:
+                try:
+                    direct_url = f"{self.gateway_url}/"
+                    return self._post(direct_url, body, timeout=timeout)
+                except AgentEazyError:
+                    raise AgentEazyError(
+                        f"Agent '{agent_name}' not found in registry",
+                        status_code=404,
+                        response=e.response,
+                    )
             # Re-raise with friendlier messages for common errors
             if e.status_code == 402 or (
                 e.status_code == 400
@@ -148,12 +162,6 @@ class AgentEazy:
                 raise AgentEazyError(
                     "Not enough credits. Run: agenteazy topup",
                     status_code=e.status_code,
-                    response=e.response,
-                )
-            if e.status_code == 404:
-                raise AgentEazyError(
-                    f"Agent '{agent_name}' not found in registry",
-                    status_code=404,
                     response=e.response,
                 )
             if e.status_code == 504:
