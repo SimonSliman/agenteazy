@@ -232,8 +232,12 @@ async def do(request: Request, body: dict = None):
     """Execute the entry function with the provided input."""
     # Input size check: reject bodies > 1 MB
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
     payload = (body or {{}}).get("input", body or {{}})
     try:
@@ -273,8 +277,12 @@ async def do(request: Request, body: dict = None):
 async def universal(request: Request, body: dict = None):
     """Universal AgentLang endpoint — route by verb."""
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
     body = body or {{}}
     verb = body.get("verb", "").upper()
@@ -344,7 +352,13 @@ def _handle_verb(verb, payload):
             return {{"status": "failed", "error": f"Registry search failed: {{e}}"}}
 
     if verb == "REPORT":
-        return {{"status": "completed", "config": AGENT_CONFIG, "recent_calls": list(_call_log)}}
+        safe_config = {{
+            "name": AGENT_CONFIG.get("name"),
+            "description": AGENT_CONFIG.get("description"),
+            "version": AGENT_CONFIG.get("version"),
+            "verbs": AGENT_CONFIG.get("verbs", []),
+        }}
+        return {{"status": "completed", "config": safe_config, "recent_calls": list(_call_log)}}
 
     if verb == "SHARE":
         data = payload.get("data", {{}})
