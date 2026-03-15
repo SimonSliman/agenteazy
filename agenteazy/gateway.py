@@ -8,9 +8,11 @@ Agent code is stored on a Modal Volume at /agents/{agent_name}/ with:
 """
 
 import importlib.util
+import inspect
 import json
 import logging
 import os
+import subprocess
 import sys
 import traceback
 import urllib.request
@@ -141,11 +143,52 @@ def _load_agent_config(agent_name: str) -> dict:
     return config
 
 
+_installed_deps: set[str] = set()  # Track which agents have had deps installed
+
+
+def _install_agent_deps(agent_name: str) -> None:
+    """Install an agent's pip dependencies if not already installed."""
+    if agent_name in _installed_deps:
+        return
+
+    agent_dir = os.path.join(AGENTS_ROOT, agent_name)
+    reqs_path = os.path.join(agent_dir, "requirements.txt")
+
+    if not os.path.isfile(reqs_path):
+        _installed_deps.add(agent_name)
+        return
+
+    # Read deps, skip fastapi/uvicorn (already installed)
+    skip = {"fastapi", "uvicorn"}
+    deps = []
+    with open(reqs_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            pkg_name = line.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
+            if pkg_name not in skip:
+                deps.append(line)
+
+    if deps:
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", "--break-system-packages"] + deps,
+                capture_output=True,
+                timeout=120,
+            )
+        except Exception:
+            pass  # Best effort — some deps may fail, agent may still work
+
+    _installed_deps.add(agent_name)
+
+
 def _load_agent_func(agent_name: str):
     """Load the entry function for an agent, caching the module."""
     if agent_name in _agent_modules:
         mod = _agent_modules[agent_name]
     else:
+        _install_agent_deps(agent_name)
         config = _load_agent_config(agent_name)
         agent_dir = os.path.join(AGENTS_ROOT, agent_name)
         repo_path = os.path.join(agent_dir, "repo")
@@ -197,7 +240,6 @@ def _merge_context(func, kwargs: dict, ctx: dict) -> dict:
 
     Uses inspect.signature to find accepted parameter names and **kwargs.
     """
-    import inspect
     merged = dict(kwargs)
     sig = inspect.signature(func)
     param_names = set(sig.parameters.keys())
@@ -213,6 +255,46 @@ def _merge_context(func, kwargs: dict, ctx: dict) -> dict:
             if key in param_names and key not in merged:
                 merged[key] = value
     return merged
+
+
+def _dispatch_call(func, data: dict):
+    """Dynamically map payload data to function parameters."""
+    sig = inspect.signature(func)
+    positional_args = []
+    kwargs = {}
+    extra = dict(data)
+
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            # **kwargs — will receive remaining data
+            continue
+        if param.kind == inspect.Parameter.VAR_POSITIONAL:
+            # *args — skip
+            continue
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            if name in extra:
+                positional_args.append(extra.pop(name))
+            elif param.default is not inspect.Parameter.empty:
+                positional_args.append(param.default)
+            else:
+                positional_args.append(None)
+            continue
+        if name in extra:
+            kwargs[name] = extra.pop(name)
+        # If not in data and has default → don't pass it (let default apply)
+        elif param.default is inspect.Parameter.empty:
+            # Required param not provided
+            kwargs[name] = None
+
+    # If function accepts **kwargs, pass remaining
+    for name, param in sig.parameters.items():
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            kwargs.update(extra)
+            break
+
+    if positional_args:
+        return func(*positional_args, **kwargs)
+    return func(**kwargs)
 
 
 # ── TollBooth helpers ──────────────────────────────────────────────────
@@ -454,24 +536,15 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
         return JSONResponse(status_code=402, content={"error": toll["error"]})
 
     func, config = _load_agent_func(agent_name)
-    entry_args = config["entry"]["args"]
     payload = (body or {}).get("input", body or {})
 
-    # Build kwargs from the entry args
-    kwargs = {a: payload.get(a) for a in entry_args} if entry_args else {}
-
-    # Merge shared context into kwargs (only keys the function accepts)
+    # Merge shared context into data before dispatch
     ctx = _agent_context.get(agent_name)
-    kwargs_with_ctx = _merge_context(func, kwargs, ctx) if ctx else kwargs
+    merged_data = {**payload, **ctx} if ctx else payload
 
     try:
-        try:
-            future = _executor.submit(func, **kwargs_with_ctx) if kwargs_with_ctx else _executor.submit(func)
-            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
-        except TypeError:
-            # Context kwargs not accepted — retry without context
-            future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
-            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+        future = _executor.submit(_dispatch_call, func, merged_data)
+        result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
 
         # Deduct after successful execution for paid agents
         if not toll.get("free"):
@@ -575,23 +648,16 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
 
     if verb == "DO":
         func, config = _load_agent_func(agent_name)
-        entry_args = config["entry"]["args"]
         # Accept both {"data": {...}} and {"input": {...}} payload formats
         data = payload.get("data") or payload.get("input") or {}
-        kwargs = {a: data.get(a) for a in entry_args} if entry_args else {}
 
-        # Merge shared context into kwargs (only keys the function accepts)
+        # Merge shared context into data before dispatch
         ctx = _agent_context.get(agent_name)
-        kwargs_with_ctx = _merge_context(func, kwargs, ctx) if ctx else kwargs
+        merged_data = {**data, **ctx} if ctx else data
 
         try:
-            try:
-                future = _executor.submit(func, **kwargs_with_ctx) if kwargs_with_ctx else _executor.submit(func)
-                result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
-            except TypeError:
-                # Context kwargs not accepted — retry without context
-                future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
-                result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
+            future = _executor.submit(_dispatch_call, func, merged_data)
+            result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
             return {"status": "completed", "output": result}
         except FuturesTimeoutError:
             future.cancel()
