@@ -1,5 +1,8 @@
 """AgentEazy Config — read/write ~/.agenteazy/config.json."""
 
+DEFAULT_REGISTRY_URL = "https://simondusable--agenteazy-registry-serve.modal.run"
+DEFAULT_GATEWAY_URL = "https://simondusable--agenteazy-gateway-serve.modal.run"
+
 import json
 import os
 from pathlib import Path
