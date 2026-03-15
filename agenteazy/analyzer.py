@@ -63,8 +63,58 @@ class RepoAnalysis:
     python_files: list[str] = field(default_factory=list)
     total_files: int = 0
 
+    # Package layout
+    package_layout: str = "flat"
+    python_root: str = "."
+
     # Errors
     errors: list[str] = field(default_factory=list)
+
+
+def detect_package_layout(repo_path: str) -> dict:
+    """
+    Detect the Python package layout of a repo.
+
+    Returns:
+        {
+            "layout": "flat" | "src" | "package",
+            "python_root": "." | "src" | etc.,
+            "packages": ["mypackage", ...]
+        }
+
+    Detection logic:
+    - "src": repo has src/ dir containing __init__.py or Python files in subdirs
+    - "package": repo root has __init__.py (the repo itself is a package)
+    - "flat": everything else (loose .py files at root)
+    """
+    path = Path(repo_path)
+    packages = []
+
+    # Check for src/ layout
+    src_dir = path / "src"
+    if src_dir.is_dir():
+        # Look for packages inside src/
+        for child in src_dir.iterdir():
+            if child.is_dir() and (child / "__init__.py").exists():
+                packages.append(child.name)
+        if packages:
+            return {"layout": "src", "python_root": "src", "packages": packages}
+        # Check for loose Python files in src/
+        if list(src_dir.glob("*.py")):
+            return {"layout": "src", "python_root": "src", "packages": []}
+
+    # Check for root package layout
+    if (path / "__init__.py").exists():
+        packages.append(path.name)
+        return {"layout": "package", "python_root": ".", "packages": packages}
+
+    # Flat layout — collect any top-level dirs with __init__.py
+    for child in path.iterdir():
+        if child.is_dir() and (child / "__init__.py").exists():
+            if child.name not in (".git", "__pycache__", ".tox", ".venv", "venv"):
+                packages.append(child.name)
+
+    return {"layout": "flat", "python_root": ".", "packages": packages}
 
 
 def parse_github_url(url: str) -> tuple[str, str]:
@@ -657,6 +707,11 @@ def analyze_repo(url: str) -> RepoAnalysis:
                 "No Python files found. AgentEazy v0.1 only supports Python repos."
             )
         return analysis
+
+    # Step 2b: Detect package layout
+    layout_info = detect_package_layout(local_path)
+    analysis.package_layout = layout_info["layout"]
+    analysis.python_root = layout_info["python_root"]
 
     # Step 3: Read dependencies
     analysis.dependencies, dep_meta = read_dependencies(local_path)

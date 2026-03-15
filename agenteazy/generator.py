@@ -69,6 +69,7 @@ def generate_agent_json(analysis, output_dir: str | None = None) -> dict:
         "dependencies": {
             "file": "requirements.txt" if analysis.has_requirements_txt else None,
         },
+        "python_root": getattr(analysis, "python_root", "."),
         "verbs": ["ASK", "DO"],
     }
 
