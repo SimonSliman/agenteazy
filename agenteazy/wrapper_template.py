@@ -22,6 +22,7 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     entry_function = agent_config["entry"]["function"]
     entry_args = agent_config["entry"]["args"]
     entry_class_name = agent_config["entry"].get("class_name")
+    entry_posonly_args = agent_config["entry"].get("posonly_args", [])
 
     if not entry_file or not entry_function:
         raise ValueError(
@@ -36,10 +37,11 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     config_json_repr = repr(json.dumps(agent_config))
 
     # Build the argument unpacking for the entry function call
-    if entry_args:
-        call_args = ", ".join(f'{a}=payload.get("{a}")' for a in entry_args)
-    else:
-        call_args = ""
+    # Separate positional-only args from keyword args
+    posonly_call_parts = [f'payload.get("{a}")' for a in entry_posonly_args]
+    kwarg_call_parts = [f'{a}=payload.get("{a}")' for a in entry_args if a not in entry_posonly_args]
+    all_call_parts = posonly_call_parts + kwarg_call_parts
+    call_args = ", ".join(all_call_parts) if all_call_parts else ""
 
     code = f'''"""Auto-generated FastAPI wrapper for {name}."""
 
@@ -285,7 +287,8 @@ def _handle_verb(verb, payload):
     if verb == "DO":
         func = _get_entry_func()
         data = payload.get("data", {{}})
-        kwargs = {{{", ".join(f'"{a}": data.get("{a}")' for a in entry_args)}}} if {bool(entry_args)} else {{}}
+        posonly = [{", ".join(f'data.get("{a}")' for a in entry_posonly_args)}]
+        kwargs = {{{", ".join(f'"{a}": data.get("{a}")' for a in entry_args if a not in entry_posonly_args)}}} if {bool([a for a in entry_args if a not in entry_posonly_args])} else {{}}
         # Inject shared context if function accepts **kwargs
         if _agent_context:
             sig = inspect.signature(func)
@@ -294,7 +297,7 @@ def _handle_verb(verb, payload):
                     kwargs["_context"] = _agent_context
                     break
         try:
-            future = _executor.submit(func, **kwargs) if kwargs else _executor.submit(func)
+            future = _executor.submit(func, *posonly, **kwargs) if (posonly or kwargs) else _executor.submit(func)
             result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
             return {{"status": "completed", "output": result}}
         except FuturesTimeoutError:

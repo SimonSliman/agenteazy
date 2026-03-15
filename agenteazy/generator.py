@@ -65,6 +65,7 @@ def generate_agent_json(analysis, output_dir: str | None = None) -> dict:
             "function": entry.name if entry else None,
             "class_name": entry.class_name if entry else None,
             "args": entry.args if entry else [],
+            "posonly_args": entry.posonly_args if entry and entry.posonly_args else [],
         },
         "dependencies": {
             "file": "requirements.txt" if analysis.has_requirements_txt else None,

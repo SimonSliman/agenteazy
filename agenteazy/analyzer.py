@@ -30,6 +30,7 @@ class DetectedFunction:
     docstring: Optional[str] = None
     line_number: int = 0
     class_name: Optional[str] = None
+    posonly_args: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -333,6 +334,25 @@ def read_dependencies(repo_path: str) -> tuple[list[str], dict]:
     return [], meta
 
 
+def _get_func_args(node: ast.FunctionDef) -> tuple[list[str], list[str]]:
+    """Extract all argument names from a function def, including positional-only args.
+    Excludes 'self' and 'cls'.
+    Returns (all_args, posonly_args)."""
+    skip = {"self", "cls"}
+    args = []
+    posonly = []
+    # Positional-only args (e.g., def f(x, /))
+    for a in node.args.posonlyargs:
+        if a.arg not in skip:
+            args.append(a.arg)
+            posonly.append(a.arg)
+    # Regular args
+    for a in node.args.args:
+        if a.arg not in skip:
+            args.append(a.arg)
+    return args, posonly
+
+
 _INTERESTING_METHODS = {
     "__call__", "run", "process", "predict", "execute",
     "handle", "generate", "analyze", "transform", "convert", "forward",
@@ -371,7 +391,7 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
             if node.name.startswith("_"):
                 continue
 
-            args = [arg.arg for arg in node.args.args if arg.arg not in ("self", "cls")]
+            args, posonly = _get_func_args(node)
 
             has_return = any(
                 isinstance(child, ast.Return) and child.value is not None
@@ -388,6 +408,7 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
                     has_return=has_return,
                     docstring=docstring,
                     line_number=node.lineno,
+                    posonly_args=posonly,
                 )
             )
 
@@ -408,7 +429,7 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
             if item.name not in _INTERESTING_METHODS:
                 continue
 
-            args = [arg.arg for arg in item.args.args if arg.arg not in ("self", "cls")]
+            args, posonly = _get_func_args(item)
 
             has_return = any(
                 isinstance(child, ast.Return) and child.value is not None
@@ -426,6 +447,7 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
                     docstring=docstring,
                     line_number=item.lineno,
                     class_name=class_name,
+                    posonly_args=posonly,
                 )
             )
 

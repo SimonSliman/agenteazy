@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agenteazy.analyzer import analyze_repo, DetectedFunction
+from agenteazy.analyzer import analyze_repo, DetectedFunction, _get_func_args
 from agenteazy.deployer import deploy_local, test_agent
 from agenteazy.modal_deployer import (
     check_modal_auth,
@@ -139,6 +139,7 @@ def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
     except SyntaxError as e:
         raise typer.BadParameter(f"Syntax error in {file_part}: {e}")
 
+    posonly_args = []
     if class_name:
         # Find the class, then the method
         found_class = False
@@ -153,7 +154,7 @@ def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
                 for item in node.body:
                     if isinstance(item, _ast.FunctionDef) and item.name == func_name:
                         found_method = True
-                        args = [a.arg for a in item.args.args if a.arg not in ("self", "cls")]
+                        args, posonly_args = _get_func_args(item)
                         has_return = any(
                             isinstance(c, _ast.Return) and c.value is not None
                             for c in _ast.walk(item)
@@ -176,7 +177,7 @@ def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
         for node in _ast.iter_child_nodes(tree):
             if isinstance(node, _ast.FunctionDef) and node.name == func_name:
                 found = True
-                args = [a.arg for a in node.args.args if a.arg not in ("self", "cls")]
+                args, posonly_args = _get_func_args(node)
                 has_return = any(
                     isinstance(c, _ast.Return) and c.value is not None
                     for c in _ast.walk(node)
@@ -195,6 +196,7 @@ def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
         docstring=docstring,
         line_number=line_number,
         class_name=class_name,
+        posonly_args=posonly_args,
     )
 
 
