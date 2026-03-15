@@ -29,6 +29,7 @@ class DetectedFunction:
     has_return: bool = False
     docstring: Optional[str] = None
     line_number: int = 0
+    class_name: Optional[str] = None
 
 
 @dataclass
@@ -48,6 +49,7 @@ class RepoAnalysis:
     has_requirements_txt: bool = False
     has_setup_py: bool = False
     has_pyproject_toml: bool = False
+    dep_source: Optional[str] = None
 
     # Entry points
     functions: list[DetectedFunction] = field(default_factory=list)
@@ -156,41 +158,191 @@ def detect_language(repo_path: str) -> Optional[str]:
     return None
 
 
+def _read_requirements_txt(path: Path) -> list[str]:
+    """Read dependencies from requirements.txt, keeping full version specifiers."""
+    req_file = path / "requirements.txt"
+    if not req_file.exists():
+        return []
+    deps = []
+    for line in req_file.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and not line.startswith("-"):
+            if line:
+                deps.append(line)
+    return deps
+
+
+def _read_pyproject_toml(path: Path) -> list[str]:
+    """Read dependencies from pyproject.toml (PEP 621 or Poetry format)."""
+    toml_file = path / "pyproject.toml"
+    if not toml_file.exists():
+        return []
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib
+        except ModuleNotFoundError:
+            return []
+
+    try:
+        with open(toml_file, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return []
+
+    # PEP 621: [project].dependencies
+    pep621_deps = data.get("project", {}).get("dependencies", [])
+    if pep621_deps and isinstance(pep621_deps, list):
+        return [str(d) for d in pep621_deps]
+
+    # Poetry: [tool.poetry.dependencies]
+    poetry_deps = data.get("tool", {}).get("poetry", {}).get("dependencies", {})
+    if poetry_deps and isinstance(poetry_deps, dict):
+        deps = []
+        for pkg, version in poetry_deps.items():
+            if pkg.lower() == "python":
+                continue
+            if isinstance(version, str):
+                # Convert Poetry version spec to pip format
+                ver = version.strip()
+                if ver.startswith("^"):
+                    deps.append(f"{pkg}>={ver[1:]}")
+                elif ver.startswith("~"):
+                    deps.append(f"{pkg}>={ver[1:]}")
+                elif ver == "*":
+                    deps.append(pkg)
+                else:
+                    deps.append(f"{pkg}{ver}" if ver[0] in "><=!" else f"{pkg}=={ver}")
+            elif isinstance(version, dict):
+                v = version.get("version", "")
+                if v:
+                    if v.startswith("^"):
+                        deps.append(f"{pkg}>={v[1:]}")
+                    elif v.startswith("~"):
+                        deps.append(f"{pkg}>={v[1:]}")
+                    else:
+                        deps.append(f"{pkg}{v}" if v[0] in "><=!" else f"{pkg}=={v}")
+                else:
+                    deps.append(pkg)
+            else:
+                deps.append(pkg)
+        return deps
+
+    return []
+
+
+def _read_setup_py(path: Path) -> list[str]:
+    """Read dependencies from setup.py via AST (no code execution)."""
+    setup_file = path / "setup.py"
+    if not setup_file.exists():
+        return []
+
+    try:
+        source = setup_file.read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):
+        return []
+
+    def _extract_list_of_strings(node) -> list[str] | None:
+        """Extract a list of string constants from an AST node."""
+        if isinstance(node, ast.List):
+            result = []
+            for elt in node.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    result.append(elt.value)
+            return result if result else None
+        return None
+
+    # Walk the AST to find setup() call
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        # Check if the function being called is "setup"
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "setup":
+            pass
+        elif isinstance(func, ast.Attribute) and func.attr == "setup":
+            pass
+        else:
+            continue
+
+        # Look for install_requires keyword
+        for kw in node.keywords:
+            if kw.arg != "install_requires":
+                continue
+
+            # Case 1: Direct list literal
+            result = _extract_list_of_strings(kw.value)
+            if result is not None:
+                return result
+
+            # Case 2: Variable reference — search module body for assignment
+            if isinstance(kw.value, ast.Name):
+                var_name = kw.value.id
+                for stmt in tree.body:
+                    if isinstance(stmt, ast.Assign):
+                        for target in stmt.targets:
+                            if isinstance(target, ast.Name) and target.id == var_name:
+                                result = _extract_list_of_strings(stmt.value)
+                                if result is not None:
+                                    return result
+
+    return []
+
+
 def read_dependencies(repo_path: str) -> tuple[list[str], dict]:
     """
-    Read Python dependencies from requirements.txt.
+    Read Python dependencies from requirements.txt, pyproject.toml, or setup.py.
     Returns (list_of_deps, metadata_dict).
+
+    Fallback priority: requirements.txt -> pyproject.toml -> setup.py.
+    Uses the first source that returns deps (no merging across sources).
+    Full version specifiers are preserved.
     """
     path = Path(repo_path)
-    deps = []
     meta = {
-        "has_requirements_txt": False,
-        "has_setup_py": False,
-        "has_pyproject_toml": False,
+        "has_requirements_txt": (path / "requirements.txt").exists(),
+        "has_setup_py": (path / "setup.py").exists(),
+        "has_pyproject_toml": (path / "pyproject.toml").exists(),
+        "dep_source": None,
     }
 
-    # requirements.txt
-    req_file = path / "requirements.txt"
-    if req_file.exists():
-        meta["has_requirements_txt"] = True
-        for line in req_file.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and not line.startswith("-"):
-                # Strip version specifiers for display
-                pkg = re.split(r"[>=<!\[]", line)[0].strip()
-                if pkg:
-                    deps.append(pkg)
+    # Try requirements.txt first
+    if meta["has_requirements_txt"]:
+        deps = _read_requirements_txt(path)
+        if deps:
+            meta["dep_source"] = "requirements.txt"
+            return deps, meta
 
-    # Check for other packaging files
-    meta["has_setup_py"] = (path / "setup.py").exists()
-    meta["has_pyproject_toml"] = (path / "pyproject.toml").exists()
+    # Try pyproject.toml
+    if meta["has_pyproject_toml"]:
+        deps = _read_pyproject_toml(path)
+        if deps:
+            meta["dep_source"] = "pyproject.toml"
+            return deps, meta
 
-    return deps, meta
+    # Try setup.py
+    if meta["has_setup_py"]:
+        deps = _read_setup_py(path)
+        if deps:
+            meta["dep_source"] = "setup.py"
+            return deps, meta
+
+    return [], meta
+
+
+_INTERESTING_METHODS = {
+    "__call__", "run", "process", "predict", "execute",
+    "handle", "generate", "analyze", "transform", "convert", "forward",
+    "__init__",
+}
 
 
 def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | None = None) -> list[DetectedFunction]:
     """
-    Parse a Python file and extract top-level function definitions.
+    Parse a Python file and extract top-level functions and class methods.
     Uses AST parsing - safe, no code execution.
 
     If parse_errors is provided, syntax errors are appended to it instead of silently ignored.
@@ -212,25 +364,20 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
 
     rel_path = os.path.relpath(filepath, repo_path)
 
-    for node in ast.walk(tree):
+    # First pass: collect TRUE top-level functions (direct children of module body only)
+    for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.FunctionDef):
             # Skip private/dunder functions
             if node.name.startswith("_"):
                 continue
 
-            # Get arguments (skip 'self')
-            args = []
-            for arg in node.args.args:
-                if arg.arg != "self":
-                    args.append(arg.arg)
+            args = [arg.arg for arg in node.args.args if arg.arg not in ("self", "cls")]
 
-            # Check if it has a return statement
             has_return = any(
                 isinstance(child, ast.Return) and child.value is not None
                 for child in ast.walk(node)
             )
 
-            # Get docstring
             docstring = ast.get_docstring(node)
 
             functions.append(
@@ -244,7 +391,77 @@ def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | N
                 )
             )
 
+    # Second pass: walk ClassDef nodes for interesting methods
+    for node in ast.iter_child_nodes(tree):
+        if not isinstance(node, ast.ClassDef):
+            continue
+
+        class_name = node.name
+        # Skip private classes and test classes
+        if class_name.startswith("_") or class_name.startswith("Test"):
+            continue
+
+        interesting_methods = []
+        for item in node.body:
+            if not isinstance(item, ast.FunctionDef):
+                continue
+            if item.name not in _INTERESTING_METHODS:
+                continue
+
+            args = [arg.arg for arg in item.args.args if arg.arg not in ("self", "cls")]
+
+            has_return = any(
+                isinstance(child, ast.Return) and child.value is not None
+                for child in ast.walk(item)
+            )
+
+            docstring = ast.get_docstring(item)
+
+            interesting_methods.append(
+                DetectedFunction(
+                    name=item.name,
+                    file=rel_path,
+                    args=args,
+                    has_return=has_return,
+                    docstring=docstring,
+                    line_number=item.lineno,
+                    class_name=class_name,
+                )
+            )
+
+        # Only include __init__ if it's the sole interesting method
+        if len(interesting_methods) > 1:
+            interesting_methods = [m for m in interesting_methods if m.name != "__init__"]
+
+        functions.extend(interesting_methods)
+
+    # Detect Flask/FastAPI web apps
+    _detect_web_framework(tree, rel_path, parse_errors)
+
     return functions
+
+
+def _detect_web_framework(tree: ast.Module, rel_path: str, parse_errors: list[str] | None) -> None:
+    """Detect Flask/FastAPI app instantiation and warn."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Call):
+            continue
+        func = node.value.func
+        name = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            name = func.attr
+        if name in ("Flask", "FastAPI"):
+            if parse_errors is not None:
+                parse_errors.append(
+                    f"This repo is a web application ({name}). "
+                    f"It already has API endpoints — wrapping may cause conflicts. "
+                    f"Consider using --entry to specify a utility function instead."
+                )
+            return
 
 
 def score_entry_point(func: DetectedFunction, filename: str) -> int:
@@ -267,6 +484,22 @@ def score_entry_point(func: DetectedFunction, filename: str) -> int:
         score += 10
     if name.startswith(("get_", "fetch_", "create_", "generate_", "build_")):
         score += 5
+
+    # Class method scoring
+    if func.class_name:
+        if name == "__call__":
+            score += 8
+        if name in ("predict", "process", "run", "execute"):
+            score += 6
+        # Class name keyword bonuses
+        cls_lower = func.class_name.lower()
+        for kw in ("model", "predictor", "processor", "handler", "agent", "pipeline", "analyzer"):
+            if kw in cls_lower:
+                score += 5
+                break
+        # Penalize __init__ unless it's the only method
+        if name == "__init__":
+            score -= 5
 
     # Has arguments = likely a real function (not just a script)
     if func.args:
@@ -430,6 +663,7 @@ def analyze_repo(url: str) -> RepoAnalysis:
     analysis.has_requirements_txt = dep_meta["has_requirements_txt"]
     analysis.has_setup_py = dep_meta["has_setup_py"]
     analysis.has_pyproject_toml = dep_meta["has_pyproject_toml"]
+    analysis.dep_source = dep_meta.get("dep_source")
 
     # Step 4: Find all Python files and extract functions
     analysis.python_files = [

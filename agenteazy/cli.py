@@ -15,7 +15,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from agenteazy.analyzer import analyze_repo
+from agenteazy.analyzer import analyze_repo, DetectedFunction
 from agenteazy.deployer import deploy_local, test_agent
 from agenteazy.modal_deployer import (
     check_modal_auth,
@@ -104,6 +104,100 @@ def _register_with_registry(registry_url: str, agent_config: dict, deploy_url: s
         return False
 
 
+def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
+    """
+    Parse --entry flag value into a DetectedFunction.
+
+    Formats:
+      file.py:function_name          -> top-level function
+      file.py:ClassName.method_name  -> class method
+    """
+    import ast as _ast
+
+    if ":" not in entry_str:
+        raise typer.BadParameter(
+            f"Invalid --entry format: '{entry_str}'. "
+            f"Use 'file.py:function_name' or 'file.py:ClassName.method_name'."
+        )
+
+    file_part, func_part = entry_str.split(":", 1)
+    class_name = None
+    func_name = func_part
+
+    if "." in func_part:
+        class_name, func_name = func_part.split(".", 1)
+
+    # Verify file exists
+    full_path = os.path.join(local_path, file_part)
+    if not os.path.isfile(full_path):
+        raise typer.BadParameter(f"File not found: {file_part} (in {local_path})")
+
+    # Verify function/method exists via AST
+    try:
+        source = open(full_path, encoding="utf-8", errors="ignore").read()
+        tree = _ast.parse(source)
+    except SyntaxError as e:
+        raise typer.BadParameter(f"Syntax error in {file_part}: {e}")
+
+    if class_name:
+        # Find the class, then the method
+        found_class = False
+        found_method = False
+        args = []
+        docstring = None
+        has_return = False
+        line_number = 0
+        for node in _ast.iter_child_nodes(tree):
+            if isinstance(node, _ast.ClassDef) and node.name == class_name:
+                found_class = True
+                for item in node.body:
+                    if isinstance(item, _ast.FunctionDef) and item.name == func_name:
+                        found_method = True
+                        args = [a.arg for a in item.args.args if a.arg not in ("self", "cls")]
+                        has_return = any(
+                            isinstance(c, _ast.Return) and c.value is not None
+                            for c in _ast.walk(item)
+                        )
+                        docstring = _ast.get_docstring(item)
+                        line_number = item.lineno
+                        break
+                break
+        if not found_class:
+            raise typer.BadParameter(f"Class '{class_name}' not found in {file_part}")
+        if not found_method:
+            raise typer.BadParameter(f"Method '{func_name}' not found in class '{class_name}' in {file_part}")
+    else:
+        # Find top-level function
+        found = False
+        args = []
+        docstring = None
+        has_return = False
+        line_number = 0
+        for node in _ast.iter_child_nodes(tree):
+            if isinstance(node, _ast.FunctionDef) and node.name == func_name:
+                found = True
+                args = [a.arg for a in node.args.args if a.arg not in ("self", "cls")]
+                has_return = any(
+                    isinstance(c, _ast.Return) and c.value is not None
+                    for c in _ast.walk(node)
+                )
+                docstring = _ast.get_docstring(node)
+                line_number = node.lineno
+                break
+        if not found:
+            raise typer.BadParameter(f"Function '{func_name}' not found in {file_part}")
+
+    return DetectedFunction(
+        name=func_name,
+        file=file_part,
+        args=args,
+        has_return=has_return,
+        docstring=docstring,
+        line_number=line_number,
+        class_name=class_name,
+    )
+
+
 # ── Commands ─────────────────────────────────────────────────────────
 
 @app.command()
@@ -158,6 +252,7 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
 def wrap(
     repo_url: str = typer.Argument(..., help="GitHub repo URL or user/repo shorthand"),
     price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
+    entry: Optional[str] = typer.Option(None, "--entry", help="Override entry point: 'file.py:func' or 'file.py:Class.method'"),
 ):
     """Analyze a repo, generate agent.json and a FastAPI wrapper."""
     console.print(f"\n[bold blue]Wrapping[/bold blue] {repo_url}...\n")
@@ -173,6 +268,21 @@ def wrap(
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
+
+    # Apply --entry override if provided
+    if entry:
+        try:
+            override = _parse_entry_override(entry, analysis.local_path)
+            analysis.suggested_entry = override
+            entry_display = f"{override.file} -> {override.class_name + '.' if override.class_name else ''}{override.name}({', '.join(override.args)})"
+            console.print(f"[bold yellow]Using specified entry:[/bold yellow] {entry_display}")
+        except typer.BadParameter as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(code=1)
+    elif analysis.suggested_entry:
+        se = analysis.suggested_entry
+        entry_display = f"{se.file} -> {se.class_name + '.' if se.class_name else ''}{se.name}({', '.join(se.args)})"
+        console.print(f"[bold yellow]Auto-detected entry:[/bold yellow] {entry_display}")
 
     if not analysis.suggested_entry:
         console.print(
@@ -249,6 +359,7 @@ def deploy(
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
     price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
+    entry: Optional[str] = typer.Option(None, "--entry", help="Override entry point: 'file.py:func' or 'file.py:Class.method'"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
     from agenteazy.config import get_gateway_url, get_registry_url
@@ -266,6 +377,21 @@ def deploy(
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
+
+    # Apply --entry override if provided
+    if entry:
+        try:
+            override = _parse_entry_override(entry, analysis.local_path)
+            analysis.suggested_entry = override
+            entry_display = f"{override.file} -> {override.class_name + '.' if override.class_name else ''}{override.name}({', '.join(override.args)})"
+            console.print(f"[bold yellow]Using specified entry:[/bold yellow] {entry_display}")
+        except typer.BadParameter as e:
+            console.print(f"[bold red]Error:[/bold red] {e}")
+            raise typer.Exit(code=1)
+    elif analysis.suggested_entry:
+        se = analysis.suggested_entry
+        entry_display = f"{se.file} -> {se.class_name + '.' if se.class_name else ''}{se.name}({', '.join(se.args)})"
+        console.print(f"[bold yellow]Auto-detected entry:[/bold yellow] {entry_display}")
 
     if not analysis.suggested_entry:
         console.print(

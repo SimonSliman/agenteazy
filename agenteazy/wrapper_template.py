@@ -21,6 +21,7 @@ def generate_wrapper(agent_config: dict, repo_path: str) -> str:
     entry_file = agent_config["entry"]["file"]
     entry_function = agent_config["entry"]["function"]
     entry_args = agent_config["entry"]["args"]
+    entry_class_name = agent_config["entry"].get("class_name")
 
     if not entry_file or not entry_function:
         raise ValueError(
@@ -118,8 +119,30 @@ def _load_module():
     return _module
 
 
+ENTRY_CLASS = {repr(entry_class_name)}
+
+_instance = None
+
+
 def _get_entry_func():
+    global _instance
     mod = _load_module()
+    if ENTRY_CLASS:
+        cls = getattr(mod, ENTRY_CLASS, None)
+        if cls is None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Class '{{ENTRY_CLASS}}' not found in {{ENTRY_MODULE}}."
+            )
+        if _instance is None:
+            _instance = cls()
+        func = getattr(_instance, ENTRY_FUNCTION, None)
+        if func is None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Method '{{ENTRY_FUNCTION}}' not found on class '{{ENTRY_CLASS}}'."
+            )
+        return func
     func = getattr(mod, ENTRY_FUNCTION, None)
     if func is None:
         available = [n for n in dir(mod) if not n.startswith("_") and callable(getattr(mod, n, None))]

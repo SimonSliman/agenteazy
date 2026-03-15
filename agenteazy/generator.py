@@ -63,6 +63,7 @@ def generate_agent_json(analysis, output_dir: str | None = None) -> dict:
         "entry": {
             "file": entry.file if entry else None,
             "function": entry.name if entry else None,
+            "class_name": entry.class_name if entry else None,
             "args": entry.args if entry else [],
         },
         "dependencies": {
