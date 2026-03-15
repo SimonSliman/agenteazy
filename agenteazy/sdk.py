@@ -5,7 +5,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from agenteazy.config import load_config
+from agenteazy.config import DEFAULT_GATEWAY_URL, DEFAULT_REGISTRY_URL, load_config
 
 
 class AgentEazyError(Exception):
@@ -22,8 +22,8 @@ class AgentEazy:
 
     def __init__(
         self,
-        registry_url: str = "https://simondusable--agenteazy-registry-serve.modal.run",
-        gateway_url: str = "https://simondusable--agenteazy-gateway-serve.modal.run",
+        registry_url: str = DEFAULT_REGISTRY_URL,
+        gateway_url: str = DEFAULT_GATEWAY_URL,
         api_key: str | None = None,
     ):
         """

@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import Field
 
+from agenteazy.config import DEFAULT_GATEWAY_URL, DEFAULT_REGISTRY_URL
 from agenteazy.sdk import AgentEazy, AgentEazyError
 
 
@@ -33,8 +34,8 @@ class AgentEazyCrewTool(CrewBaseTool):
     def from_agent(
         cls,
         agent_name: str,
-        registry_url: str = "https://simondusable--agenteazy-registry-serve.modal.run",
-        gateway_url: str = "https://simondusable--agenteazy-gateway-serve.modal.run",
+        registry_url: str = DEFAULT_REGISTRY_URL,
+        gateway_url: str = DEFAULT_GATEWAY_URL,
         api_key: str | None = None,
         description_override: str | None = None,
     ) -> "AgentEazyCrewTool":
