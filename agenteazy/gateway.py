@@ -33,6 +33,23 @@ def validate_verb(verb):
     return isinstance(verb, str) and verb.upper() in VALID_VERBS
 
 
+def _validate_agent_name(agent_name: str) -> str:
+    """Validate agent name to prevent path traversal attacks.
+
+    Rejects names containing '..', '/', '\\', or null bytes.
+    Returns the sanitized name or raises HTTPException.
+    """
+    if not agent_name or not isinstance(agent_name, str):
+        raise HTTPException(status_code=400, detail="Invalid agent name")
+    if ".." in agent_name or "/" in agent_name or "\\" in agent_name or "\x00" in agent_name:
+        raise HTTPException(status_code=400, detail="Invalid agent name")
+    # Double-check: resolved path must stay inside AGENTS_ROOT
+    resolved = os.path.realpath(os.path.join(AGENTS_ROOT, agent_name))
+    if not resolved.startswith(os.path.realpath(AGENTS_ROOT) + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid agent name")
+    return agent_name
+
+
 def _get_registry_url():
     env_url = os.environ.get("AGENTEAZY_REGISTRY_URL")
     if env_url:
@@ -256,7 +273,7 @@ def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
 
 
 def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> dict:
-    """Deduct credits from caller, pay the developer, record platform fee. Fail-open."""
+    """Deduct credits from caller and pay the developer atomically. Fail-open."""
     try:
         registry_url = _get_registry_url()
         if not registry_url:
@@ -265,19 +282,6 @@ def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> 
         base = registry_url.rstrip("/")
         platform_fee = int(credits_per_call * 0.20)
         developer_credit = credits_per_call - platform_fee
-
-        # Deduct from caller
-        deduct_payload = json.dumps({
-            "api_key": auth_token,
-            "agent_name": agent_name,
-            "amount": credits_per_call,
-        }).encode()
-        req = urllib.request.Request(
-            f"{base}/tollbooth/deduct", data=deduct_payload,
-            headers={"Content-Type": "application/json"}, method="POST",
-        )
-        resp = urllib.request.urlopen(req, timeout=10)
-        deduct_result = json.loads(resp.read().decode())
 
         # Look up agent owner
         owner_api_key = None
@@ -289,39 +293,64 @@ def _deduct_and_pay(auth_token: str, agent_name: str, credits_per_call: int) -> 
         except Exception as e:
             _tollbooth_logger.warning("Failed to look up agent owner: %s", e)
 
-        # Pay the developer if owner is known
         if owner_api_key and developer_credit > 0:
-            try:
-                earn_payload = json.dumps({
-                    "api_key": owner_api_key,
-                    "amount": developer_credit,
-                    "source": "agent_revenue",
-                }).encode()
-                earn_req = urllib.request.Request(
-                    f"{base}/tollbooth/earn", data=earn_payload,
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                urllib.request.urlopen(earn_req, timeout=10)
-            except Exception as e:
-                _tollbooth_logger.warning("Failed to credit developer: %s", e)
+            # Atomic transfer: deduct from caller and credit developer in one call
+            transfer_payload = json.dumps({
+                "from_api_key": auth_token,
+                "to_api_key": owner_api_key,
+                "amount": developer_credit,
+                "agent_name": agent_name,
+            }).encode()
+            transfer_req = urllib.request.Request(
+                f"{base}/tollbooth/transfer", data=transfer_payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            transfer_resp = urllib.request.urlopen(transfer_req, timeout=10)
+            transfer_data = json.loads(transfer_resp.read().decode())
 
-        # Record platform fee
-        if platform_fee > 0:
-            try:
-                fee_payload = json.dumps({
-                    "api_key": "ae_platform",
-                    "amount": platform_fee,
-                    "source": "platform_fee",
-                }).encode()
-                fee_req = urllib.request.Request(
-                    f"{base}/tollbooth/earn", data=fee_payload,
-                    headers={"Content-Type": "application/json"}, method="POST",
-                )
-                urllib.request.urlopen(fee_req, timeout=10)
-            except Exception as e:
-                _tollbooth_logger.warning("Failed to record platform fee: %s", e)
+            # Record platform fee separately (goes to platform account)
+            if platform_fee > 0:
+                try:
+                    # Deduct the platform fee portion from caller
+                    deduct_payload = json.dumps({
+                        "api_key": auth_token,
+                        "agent_name": agent_name,
+                        "amount": platform_fee,
+                    }).encode()
+                    deduct_req = urllib.request.Request(
+                        f"{base}/tollbooth/deduct", data=deduct_payload,
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    urllib.request.urlopen(deduct_req, timeout=10)
 
-        return {"deducted": credits_per_call, "remaining": deduct_result.get("remaining")}
+                    fee_payload = json.dumps({
+                        "api_key": "ae_platform",
+                        "amount": platform_fee,
+                        "source": "platform_fee",
+                    }).encode()
+                    fee_req = urllib.request.Request(
+                        f"{base}/tollbooth/earn", data=fee_payload,
+                        headers={"Content-Type": "application/json"}, method="POST",
+                    )
+                    urllib.request.urlopen(fee_req, timeout=10)
+                except Exception as e:
+                    _tollbooth_logger.warning("Failed to record platform fee: %s", e)
+
+            return {"deducted": credits_per_call, "remaining": transfer_data.get("remaining")}
+        else:
+            # No owner found — just deduct from caller
+            deduct_payload = json.dumps({
+                "api_key": auth_token,
+                "agent_name": agent_name,
+                "amount": credits_per_call,
+            }).encode()
+            req = urllib.request.Request(
+                f"{base}/tollbooth/deduct", data=deduct_payload,
+                headers={"Content-Type": "application/json"}, method="POST",
+            )
+            resp = urllib.request.urlopen(req, timeout=10)
+            deduct_result = json.loads(resp.read().decode())
+            return {"deducted": credits_per_call, "remaining": deduct_result.get("remaining")}
     except Exception as e:
         _tollbooth_logger.error("Deduct failed: %s", e)
         return {}
@@ -359,6 +388,7 @@ async def list_all_agents():
 @app.get("/agent/{agent_name}")
 async def agent_info(agent_name: str):
     """Return basic info about a specific agent."""
+    _validate_agent_name(agent_name)
     await _refresh_volume()
     config = _load_agent_config(agent_name)
     return {
@@ -374,6 +404,7 @@ async def agent_info(agent_name: str):
 @app.post("/agent/{agent_name}/ask")
 async def agent_ask(agent_name: str, request: Request, body: dict = None):
     """Return an agent's capabilities."""
+    _validate_agent_name(agent_name)
     await _refresh_volume()
 
     # TollBooth: check credits before executing
@@ -405,11 +436,16 @@ async def agent_ask(agent_name: str, request: Request, body: dict = None):
 @app.post("/agent/{agent_name}/do")
 async def agent_do(agent_name: str, request: Request, body: dict = None):
     """Execute an agent's entry function."""
+    _validate_agent_name(agent_name)
     await _refresh_volume()
     # Input size check
     content_length = request.headers.get("content-length")
-    if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-        raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
     # TollBooth: check credits before executing
     auth = (body or {}).get("auth") or request.headers.get("x-api-key")
@@ -467,11 +503,16 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
 @app.post("/agent/{agent_name}/")
 async def agent_universal(agent_name: str, request: Request, body: dict = None):
     """Universal AgentLang endpoint — route by verb."""
+    _validate_agent_name(agent_name)
     try:
         await _refresh_volume()
         content_length = request.headers.get("content-length")
-        if content_length and int(content_length) > MAX_REQUEST_BODY_BYTES:
-            raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+        if content_length:
+            try:
+                if int(content_length) > MAX_REQUEST_BODY_BYTES:
+                    raise HTTPException(status_code=413, detail="Request body too large (max 1 MB)")
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid Content-Length header")
 
         body = body or {}
         verb = body.get("verb", "").upper()
@@ -578,8 +619,18 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
 
     if verb == "REPORT":
         config = _load_agent_config(agent_name)
+        safe_config = {
+            "name": config.get("name"),
+            "description": config.get("description"),
+            "version": config.get("version"),
+            "verbs": config.get("verbs", []),
+            "entry": {
+                "file": config.get("entry", {}).get("file"),
+                "function": config.get("entry", {}).get("function"),
+            },
+        }
         log = list(_call_log.get(agent_name, []))
-        return {"status": "completed", "config": config, "recent_calls": log}
+        return {"status": "completed", "config": safe_config, "recent_calls": log}
 
     if verb == "SHARE":
         data = payload.get("data") or payload.get("input") or {}
@@ -616,28 +667,6 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
                 return {"status": "error", "message": "No registry URL configured"}
             base = registry_url.rstrip("/")
 
-            # Check sender balance
-            bal_req = urllib.request.Request(f"{base}/tollbooth/balance/{auth_token}")
-            bal_resp = urllib.request.urlopen(bal_req, timeout=5)
-            bal_data = json.loads(bal_resp.read().decode())
-            balance = bal_data.get("credits", 0)
-            if balance < credits:
-                return {"status": "error", "message": f"Insufficient credits. Balance: {balance}"}
-
-            # Deduct from sender
-            deduct_payload = json.dumps({
-                "api_key": auth_token,
-                "agent_name": to_agent,
-                "amount": credits,
-            }).encode()
-            deduct_req = urllib.request.Request(
-                f"{base}/tollbooth/deduct", data=deduct_payload,
-                headers={"Content-Type": "application/json"}, method="POST",
-            )
-            deduct_resp = urllib.request.urlopen(deduct_req, timeout=5)
-            deduct_data = json.loads(deduct_resp.read().decode())
-            remaining = deduct_data.get("remaining", balance - credits)
-
             # Look up owner of to_agent
             owner_req = urllib.request.Request(f"{base}/registry/agent/{to_agent}/owner")
             owner_resp = urllib.request.urlopen(owner_req, timeout=5)
@@ -647,19 +676,36 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
             if not owner_key:
                 return {"status": "error", "message": f"Agent {to_agent} has no registered owner to receive credits"}
 
-            # Credit the recipient
-            earn_payload = json.dumps({
-                "api_key": owner_key,
+            # Atomic transfer: deduct from sender and credit recipient in one call
+            transfer_payload = json.dumps({
+                "from_api_key": auth_token,
+                "to_api_key": owner_key,
                 "amount": credits,
-                "source": "pay_transfer",
+                "agent_name": to_agent,
             }).encode()
-            earn_req = urllib.request.Request(
-                f"{base}/tollbooth/earn", data=earn_payload,
+            transfer_req = urllib.request.Request(
+                f"{base}/tollbooth/transfer", data=transfer_payload,
                 headers={"Content-Type": "application/json"}, method="POST",
             )
-            urllib.request.urlopen(earn_req, timeout=5)
+            transfer_resp = urllib.request.urlopen(transfer_req, timeout=10)
+            transfer_data = json.loads(transfer_resp.read().decode())
 
-            return {"status": "completed", "transferred": credits, "to": to_agent, "remaining_balance": remaining}
+            if transfer_data.get("success"):
+                return {
+                    "status": "completed",
+                    "transferred": credits,
+                    "to": to_agent,
+                    "remaining_balance": transfer_data.get("remaining"),
+                }
+            return {"status": "error", "message": transfer_data.get("error", "Transfer failed")}
+        except urllib.error.HTTPError as e:
+            body = None
+            try:
+                body = json.loads(e.read().decode())
+            except Exception:
+                pass
+            msg = body.get("error", str(e)) if body else str(e)
+            return {"status": "error", "message": msg}
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
