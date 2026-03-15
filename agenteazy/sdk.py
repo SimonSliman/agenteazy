@@ -101,6 +101,8 @@ class AgentEazy:
             agents = client.find("password strength")
             # [{"name": "zxcvbn-python", "description": "...", ...}]
         """
+        if not query or not query.strip():
+            return self.list_agents()[:limit]
         encoded = urllib.parse.quote(query)
         url = f"{self.registry_url}/registry/search?q={encoded}"
         result = self._get(url)
