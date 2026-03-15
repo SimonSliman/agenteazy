@@ -104,7 +104,7 @@ def _get_db() -> sqlite3.Connection:
     return conn
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict:
+def _row_to_dict(row: sqlite3.Row, include_secrets: bool = False) -> dict:
     d = dict(row)
     for field in ("verbs", "tags"):
         if d.get(field):
@@ -114,14 +114,29 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
                 d[field] = []
         else:
             d[field] = []
+    if not include_secrets:
+        d.pop("owner_api_key", None)
     return d
 
 
 # ── Endpoints ────────────────────────────────────────────────────────
 
 @app.post("/registry/register")
-def register_agent(req: RegisterRequest):
+def register_agent(req: RegisterRequest, request: Request):
     db = _get_db()
+    # Check if agent already exists — if so, require the original owner's key
+    existing = db.execute(
+        "SELECT owner_api_key FROM agents WHERE name = ?", (req.name,)
+    ).fetchone()
+    if existing and existing["owner_api_key"]:
+        # Agent exists with an owner — caller must prove ownership
+        caller_key = req.owner_api_key or request.headers.get("x-api-key")
+        if caller_key != existing["owner_api_key"]:
+            db.close()
+            raise HTTPException(
+                status_code=403,
+                detail=f"Agent '{req.name}' is already registered by another owner",
+            )
     now = datetime.now(timezone.utc).isoformat()
     db.execute(
         """
@@ -206,13 +221,21 @@ def list_agents(limit: int = Query(50, ge=1), offset: int = Query(0, ge=0)):
 
 
 @app.delete("/registry/agent/{name}")
-def delete_agent(name: str):
+def delete_agent(name: str, request: Request):
+    api_key = request.headers.get("x-api-key")
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing x-api-key header")
     db = _get_db()
-    cur = db.execute("DELETE FROM agents WHERE name = ?", (name,))
+    row = db.execute("SELECT owner_api_key FROM agents WHERE name = ?", (name,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+    if row["owner_api_key"] != api_key:
+        db.close()
+        raise HTTPException(status_code=403, detail="Not authorized to delete this agent")
+    db.execute("DELETE FROM agents WHERE name = ?", (name,))
     db.commit()
     db.close()
-    if cur.rowcount == 0:
-        raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
     return {"deleted": True}
 
 
@@ -437,6 +460,61 @@ def tollbooth_stats():
         "total_credits_in_circulation": total_credits,
         "total_transactions": total_transactions,
     }
+
+
+class TransferRequest(BaseModel):
+    from_api_key: str
+    to_api_key: str
+    amount: int
+    agent_name: Optional[str] = None
+
+
+@app.post("/tollbooth/transfer")
+def tollbooth_transfer(req: TransferRequest):
+    """Atomic credit transfer: deduct from sender and credit recipient in one transaction."""
+    if req.amount <= 0:
+        return JSONResponse(status_code=400, content={"error": "Amount must be positive"})
+    if req.amount > 1000:
+        return JSONResponse(status_code=400, content={"error": "Maximum transfer is 1000 credits"})
+
+    db = _get_db()
+    try:
+        sender = db.execute("SELECT credits FROM balances WHERE api_key = ?", (req.from_api_key,)).fetchone()
+        if not sender:
+            return JSONResponse(status_code=404, content={"error": "Invalid sender API key"})
+
+        recipient = db.execute("SELECT credits FROM balances WHERE api_key = ?", (req.to_api_key,)).fetchone()
+        if not recipient:
+            return JSONResponse(status_code=404, content={"error": "Invalid recipient API key"})
+
+        if sender["credits"] < req.amount:
+            return JSONResponse(status_code=400, content={
+                "error": "Insufficient credits",
+                "balance": sender["credits"],
+                "cost": req.amount,
+            })
+
+        now = datetime.now(timezone.utc).isoformat()
+        new_sender_balance = sender["credits"] - req.amount
+        new_recipient_balance = recipient["credits"] + req.amount
+
+        db.execute(
+            "UPDATE balances SET credits = ?, total_spent = total_spent + ? WHERE api_key = ?",
+            (new_sender_balance, req.amount, req.from_api_key),
+        )
+        db.execute(
+            "UPDATE balances SET credits = ?, total_earned = total_earned + ? WHERE api_key = ?",
+            (new_recipient_balance, req.amount, req.to_api_key),
+        )
+        db.execute(
+            """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
+               VALUES (?, ?, ?, ?, 0, 0, 'pay_transfer', 'PAY', ?)""",
+            (req.from_api_key, req.to_api_key, req.agent_name, req.amount, now),
+        )
+        db.commit()
+        return {"success": True, "transferred": req.amount, "remaining": new_sender_balance}
+    finally:
+        db.close()
 
 
 @app.post("/tollbooth/check-transfer-limit")
