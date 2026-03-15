@@ -746,125 +746,82 @@ def logs(
 # ── Batch and cleanup commands ────────────────────────────────────────
 
 @app.command(name="batch-deploy")
-def batch_deploy(
-    repos_dir: str = typer.Argument(..., help="Directory containing repo subdirectories"),
-    local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
-    registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register"),
+def batch_deploy_cmd(
+    repos_file: str = typer.Argument(..., help="Path to a text file with one GitHub URL per line"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Analyze only, don't wrap or deploy"),
+    wrap_only: bool = typer.Option(False, "--wrap-only", help="Wrap all repos but don't deploy to Modal"),
+    price: int = typer.Option(0, "--price", help="Default credits per call for all agents (0 = free)"),
+    output_dir: str = typer.Option("./agenteazy-output", "--output-dir", help="Base output directory"),
+    max_failures: int = typer.Option(10, "--max-failures", help="Stop after N consecutive failures"),
+    skip_existing: bool = typer.Option(False, "--skip-existing", help="Skip repos that already have an output dir"),
+    entry_file: Optional[str] = typer.Option(None, "--entry-file", help="JSON file mapping repo names to entry points"),
 ):
-    """Wrap and deploy all repos in a directory sequentially."""
-    repos_dir = os.path.abspath(repos_dir)
-    if not os.path.isdir(repos_dir):
-        console.print(f"[bold red]Error:[/bold red] '{repos_dir}' is not a directory.")
+    """Batch deploy agents from a list of GitHub repos with graceful failure handling."""
+    from agenteazy.batch import (
+        batch_process, parse_repos_file, load_entry_overrides,
+        save_batch_report, print_batch_summary,
+    )
+
+    if not os.path.isfile(repos_file):
+        console.print(f"[bold red]Error:[/bold red] File not found: {repos_file}")
         raise typer.Exit(code=1)
 
-    subdirs = sorted([
-        d for d in os.listdir(repos_dir)
-        if os.path.isdir(os.path.join(repos_dir, d)) and not d.startswith(".")
-    ])
-
-    if not subdirs:
-        console.print(f"[yellow]No subdirectories found in[/yellow] {repos_dir}")
+    repos = parse_repos_file(repos_file)
+    if not repos:
+        console.print("[yellow]No repos found in file.[/yellow]")
         raise typer.Exit(code=1)
 
-    console.print(f"\n[bold blue]Batch deploy:[/bold blue] {len(subdirs)} repos in {repos_dir}\n")
+    # Determine mode
+    if dry_run:
+        mode = "dry-run"
+    elif wrap_only:
+        mode = "wrap-only"
+    else:
+        mode = "full"
 
-    results = []
-    for repo_name in subdirs:
-        repo_path = os.path.join(repos_dir, repo_name)
-        console.print(f"\n[bold]{'─' * 50}[/bold]")
-        console.print(f"[bold cyan]Processing:[/bold cyan] {repo_name}")
+    # Load entry overrides
+    entry_overrides = {}
+    if entry_file:
+        if not os.path.isfile(entry_file):
+            console.print(f"[bold red]Error:[/bold red] Entry file not found: {entry_file}")
+            raise typer.Exit(code=1)
+        entry_overrides = load_entry_overrides(entry_file)
 
-        try:
-            analysis = analyze_repo(repo_path)
-        except Exception as e:
-            results.append({"name": repo_name, "status": "error", "detail": str(e)})
-            console.print(f"  [red]Analysis failed:[/red] {e}")
-            continue
+    console.print(f"\n[bold blue]Batch Deploy[/bold blue] — {len(repos)} repos, mode: {mode}\n")
 
-        if not analysis.suggested_entry:
-            results.append({"name": repo_name, "status": "skipped", "detail": "No entry point found"})
-            console.print(f"  [yellow]Skipped:[/yellow] no entry point found")
-            continue
+    report = batch_process(
+        repos=repos,
+        mode=mode,
+        price=price,
+        output_base=output_dir,
+        max_consecutive_failures=max_failures,
+        skip_existing=skip_existing,
+        entry_overrides=entry_overrides,
+    )
 
-        output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
-        os.makedirs(output_dir, exist_ok=True)
+    report_path = save_batch_report(report, output_dir, mode)
+    print_batch_summary(report, output_dir, report_path)
 
-        agent_config = generate_agent_json(analysis, output_dir=output_dir)
-        wrapper_code = generate_wrapper(agent_config, analysis.local_path)
 
-        if not validate_wrapper(wrapper_code):
-            results.append({"name": repo_name, "status": "error", "detail": "Wrapper syntax error"})
-            console.print(f"  [red]Error:[/red] generated wrapper has syntax errors")
-            continue
+@app.command(name="batch-analyze")
+def batch_analyze_cmd(
+    repos_file: str = typer.Argument(..., help="Path to a text file with one GitHub URL per line"),
+    output_dir: str = typer.Option("./agenteazy-output", "--output-dir", help="Base output directory"),
+):
+    """Analyze multiple repos without wrapping. Shows a summary table."""
+    from agenteazy.batch import parse_repos_file, batch_analyze
 
-        save_agent_json(agent_config, output_dir)
-        with open(os.path.join(output_dir, "wrapper.py"), "w") as f:
-            f.write(wrapper_code)
+    if not os.path.isfile(repos_file):
+        console.print(f"[bold red]Error:[/bold red] File not found: {repos_file}")
+        raise typer.Exit(code=1)
 
-        repo_dest = os.path.join(output_dir, "repo")
-        if os.path.exists(repo_dest):
-            shutil.rmtree(repo_dest)
-        shutil.copytree(analysis.local_path, repo_dest, dirs_exist_ok=True)
+    repos = parse_repos_file(repos_file)
+    if not repos:
+        console.print("[yellow]No repos found in file.[/yellow]")
+        raise typer.Exit(code=1)
 
-        reqs_path = os.path.join(output_dir, "requirements.txt")
-        wrapper_deps = ["fastapi>=0.100.0", "uvicorn>=0.23.0"]
-        all_deps = analysis.dependencies + wrapper_deps
-        with open(reqs_path, "w") as f:
-            f.write("\n".join(all_deps) + "\n")
-
-        if local:
-            results.append({
-                "name": repo_name,
-                "status": "wrapped",
-                "detail": f"Output: {output_dir}",
-                "version": agent_config["version"],
-            })
-            console.print(f"  [green]Wrapped[/green] → {output_dir}")
-        else:
-            try:
-                url = deploy_to_modal(output_dir, analysis.repo_name)
-                record_deploy(
-                    name=agent_config["name"],
-                    version=agent_config["version"],
-                    url=url,
-                    modal_app_name=analysis.repo_name,
-                )
-                results.append({
-                    "name": repo_name,
-                    "status": "deployed",
-                    "detail": url,
-                    "version": agent_config["version"],
-                })
-                console.print(f"  [green]Deployed[/green] → {url}")
-
-                if registry:
-                    _register_with_registry(registry, agent_config, url, analysis)
-            except Exception as e:
-                results.append({"name": repo_name, "status": "error", "detail": str(e)})
-                console.print(f"  [red]Deploy failed:[/red] {e}")
-
-    # Print summary table
-    console.print(f"\n[bold]{'─' * 50}[/bold]")
-    table = Table(title=f"Batch Deploy Summary ({len(results)} repos)")
-    table.add_column("Name", style="bold cyan")
-    table.add_column("Status")
-    table.add_column("Version")
-    table.add_column("Detail", style="dim")
-
-    for r in results:
-        status = r["status"]
-        if status == "deployed":
-            status_display = "[green]deployed[/green]"
-        elif status == "wrapped":
-            status_display = "[blue]wrapped[/blue]"
-        elif status == "skipped":
-            status_display = "[yellow]skipped[/yellow]"
-        else:
-            status_display = "[red]error[/red]"
-        table.add_row(r["name"], status_display, r.get("version", "-"), r.get("detail", ""))
-
-    console.print(table)
-    console.print()
+    console.print(f"\n[bold blue]Batch Analyze[/bold blue] — {len(repos)} repos\n")
+    batch_analyze(repos, output_base=output_dir)
 
 
 @app.command()
