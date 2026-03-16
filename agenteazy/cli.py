@@ -572,10 +572,10 @@ def search(
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry server URL"),
 ):
     """Search for agents in the registry."""
-    from agenteazy.config import get_registry_url
+    from agenteazy.config import get_registry_url, DEFAULT_REGISTRY_URL
 
     if not registry:
-        registry = get_registry_url() or "http://localhost:8001"
+        registry = get_registry_url() or DEFAULT_REGISTRY_URL
     url = f"{registry.rstrip('/')}/registry/search?q={urllib.request.quote(query)}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
@@ -621,10 +621,10 @@ def list_agents(
     offset: int = typer.Option(0, "--offset", help="Offset for pagination"),
 ):
     """List all agents in the registry."""
-    from agenteazy.config import get_registry_url
+    from agenteazy.config import get_registry_url, DEFAULT_REGISTRY_URL
 
     if not registry:
-        registry = get_registry_url() or "http://localhost:8001"
+        registry = get_registry_url() or DEFAULT_REGISTRY_URL
     url = f"{registry.rstrip('/')}/registry/all?limit={limit}&offset={offset}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
@@ -998,9 +998,9 @@ def signup(
     email: str = typer.Option(..., "--email", "-e", help="Your email address"),
 ):
     """Sign up for an AgentEazy account and get an API key."""
-    from agenteazy.config import get_registry_url, set_api_key
+    from agenteazy.config import get_registry_url, set_api_key, DEFAULT_REGISTRY_URL
 
-    registry_url = get_registry_url() or "http://localhost:8001"
+    registry_url = get_registry_url() or DEFAULT_REGISTRY_URL
     url = f"{registry_url.rstrip('/')}/tollbooth/signup"
     payload = json.dumps({"github_username": github_username, "email": email}).encode()
     req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
@@ -1025,14 +1025,14 @@ def signup(
 @app.command()
 def balance():
     """Check your credit balance."""
-    from agenteazy.config import get_registry_url, get_api_key
+    from agenteazy.config import get_registry_url, get_api_key, DEFAULT_REGISTRY_URL
 
     api_key = get_api_key()
     if not api_key:
         console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
         return
 
-    registry_url = get_registry_url() or "http://localhost:8001"
+    registry_url = get_registry_url() or DEFAULT_REGISTRY_URL
     url = f"{registry_url.rstrip('/')}/tollbooth/balance/{api_key}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
@@ -1061,14 +1061,14 @@ def balance():
 @app.command()
 def transactions():
     """Show recent transactions."""
-    from agenteazy.config import get_registry_url, get_api_key
+    from agenteazy.config import get_registry_url, get_api_key, DEFAULT_REGISTRY_URL
 
     api_key = get_api_key()
     if not api_key:
         console.print("[yellow]Not signed up yet. Run: agenteazy signup <github_username>[/yellow]")
         return
 
-    registry_url = get_registry_url() or "http://localhost:8001"
+    registry_url = get_registry_url() or DEFAULT_REGISTRY_URL
     url = f"{registry_url.rstrip('/')}/tollbooth/transactions/{api_key}"
     try:
         resp = urllib.request.urlopen(url, timeout=10)
