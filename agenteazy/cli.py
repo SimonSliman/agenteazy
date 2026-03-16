@@ -364,7 +364,7 @@ def deploy(
     entry: Optional[str] = typer.Option(None, "--entry", help="Override entry point: 'file.py:func' or 'file.py:Class.method'"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
-    from agenteazy.config import get_gateway_url, get_registry_url
+    from agenteazy.config import get_gateway_url, get_registry_url, DEFAULT_REGISTRY_URL, DEFAULT_GATEWAY_URL
 
     console.print(f"\n[bold blue]Deploying[/bold blue] {repo_url}...\n")
 
