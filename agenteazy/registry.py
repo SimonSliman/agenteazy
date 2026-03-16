@@ -210,6 +210,18 @@ def get_agent_owner(name: str):
     return {"owner_api_key": row["owner_api_key"]}
 
 
+@app.get("/registry/agents-by-owner/{api_key}")
+def agents_by_owner(api_key: str):
+    db = _get_db()
+    rows = db.execute(
+        "SELECT * FROM agents WHERE owner_api_key = ? ORDER BY name",
+        (api_key,),
+    ).fetchall()
+    db.close()
+    agents = [_row_to_dict(r, include_secrets=False) for r in rows]
+    return {"agents": agents, "count": len(agents)}
+
+
 @app.get("/registry/all")
 def list_agents(limit: int = Query(50, ge=1), offset: int = Query(0, ge=0)):
     db = _get_db()
