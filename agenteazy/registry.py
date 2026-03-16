@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 DB_PATH = Path(os.environ.get("AGENTEAZY_DB_PATH", "./agenteazy-registry.db"))
+ADMIN_KEY = os.environ.get("AGENTEAZY_ADMIN_KEY")
 
 app = FastAPI(title="AgentEazy Registry", version="0.1.0")
 
@@ -533,6 +534,178 @@ def check_transfer_limit(req: CheckTransferLimitRequest):
     if daily_transferred + req.amount > 1000:
         return JSONResponse(status_code=429, content={"error": "Daily transfer limit exceeded. Max 1000 credits per day."})
     return {"ok": True, "daily_transferred": daily_transferred}
+
+
+# ── Admin helpers ────────────────────────────────────────────────────
+
+def _require_admin(request: Request):
+    """Check admin key from header. Raises 401/503."""
+    if not ADMIN_KEY:
+        raise HTTPException(status_code=503, detail="Admin not configured")
+    key = request.headers.get("x-admin-key")
+    if key != ADMIN_KEY:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+class AdminCreditRequest(BaseModel):
+    api_key: str
+    amount: int  # Positive to credit, negative to debit
+    reason: str = "admin_adjustment"
+
+
+# ── Admin Endpoints ─────────────────────────────────────────────────
+
+@app.get("/admin/accounts")
+def admin_list_accounts(request: Request, limit: int = Query(100, ge=1), offset: int = Query(0, ge=0)):
+    _require_admin(request)
+    db = _get_db()
+    rows = db.execute(
+        "SELECT api_key, github_username, email, credits, total_earned, total_spent, created_at FROM balances ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    ).fetchall()
+    total = db.execute("SELECT COUNT(*) FROM balances").fetchone()[0]
+    db.close()
+
+    accounts = []
+    for r in rows:
+        accounts.append({
+            "api_key_prefix": r["api_key"][:10] + "...",
+            "api_key": r["api_key"],
+            "github_username": r["github_username"],
+            "email": r["email"],
+            "credits": r["credits"],
+            "total_earned": r["total_earned"],
+            "total_spent": r["total_spent"],
+            "created_at": r["created_at"],
+        })
+
+    return {"accounts": accounts, "total": total}
+
+
+@app.get("/admin/transactions")
+def admin_list_transactions(request: Request, limit: int = Query(100, ge=1), offset: int = Query(0, ge=0), type: str = Query(None)):
+    _require_admin(request)
+    db = _get_db()
+    if type:
+        rows = db.execute(
+            "SELECT * FROM transactions WHERE type = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (type, limit, offset),
+        ).fetchall()
+        total = db.execute("SELECT COUNT(*) FROM transactions WHERE type = ?", (type,)).fetchone()[0]
+    else:
+        rows = db.execute(
+            "SELECT * FROM transactions ORDER BY timestamp DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        ).fetchall()
+        total = db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+    db.close()
+
+    return {"transactions": [dict(r) for r in rows], "total": total}
+
+
+@app.get("/admin/platform-summary")
+def admin_platform_summary(request: Request):
+    _require_admin(request)
+    db = _get_db()
+    total_accounts = db.execute("SELECT COUNT(*) FROM balances").fetchone()[0]
+    total_credits = db.execute("SELECT COALESCE(SUM(credits), 0) FROM balances").fetchone()[0]
+    total_earned = db.execute("SELECT COALESCE(SUM(total_earned), 0) FROM balances").fetchone()[0]
+    total_spent = db.execute("SELECT COALESCE(SUM(total_spent), 0) FROM balances").fetchone()[0]
+    total_transactions = db.execute("SELECT COUNT(*) FROM transactions").fetchone()[0]
+
+    platform = db.execute(
+        "SELECT credits, total_earned FROM balances WHERE api_key = 'ae_platform'"
+    ).fetchone()
+
+    type_breakdown = db.execute(
+        "SELECT type, COUNT(*) as count, COALESCE(SUM(credits), 0) as total_credits FROM transactions GROUP BY type"
+    ).fetchall()
+
+    one_day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    recent_calls = db.execute(
+        "SELECT COUNT(*) FROM transactions WHERE type = 'agent_call' AND timestamp >= ?",
+        (one_day_ago,),
+    ).fetchone()[0]
+    recent_signups = db.execute(
+        "SELECT COUNT(*) FROM transactions WHERE type = 'signup_bonus' AND timestamp >= ?",
+        (one_day_ago,),
+    ).fetchone()[0]
+    db.close()
+
+    return {
+        "total_accounts": total_accounts,
+        "total_credits_in_circulation": total_credits,
+        "total_earned_all_time": total_earned,
+        "total_spent_all_time": total_spent,
+        "total_transactions": total_transactions,
+        "platform_account": {
+            "credits": platform["credits"] if platform else None,
+            "total_earned": platform["total_earned"] if platform else None,
+            "exists": platform is not None,
+        },
+        "transaction_breakdown": {r["type"]: {"count": r["count"], "credits": r["total_credits"]} for r in type_breakdown},
+        "last_24h": {
+            "agent_calls": recent_calls,
+            "signups": recent_signups,
+        },
+    }
+
+
+@app.post("/admin/credit-account")
+def admin_credit_account(req: AdminCreditRequest, request: Request):
+    _require_admin(request)
+    db = _get_db()
+    row = db.execute("SELECT credits FROM balances WHERE api_key = ?", (req.api_key,)).fetchone()
+    if not row:
+        db.close()
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    new_balance = row["credits"] + req.amount
+    if new_balance < 0:
+        db.close()
+        raise HTTPException(status_code=400, detail=f"Would result in negative balance ({new_balance})")
+
+    now = datetime.now(timezone.utc).isoformat()
+    db.execute(
+        "UPDATE balances SET credits = ? WHERE api_key = ?",
+        (new_balance, req.api_key),
+    )
+    if req.amount > 0:
+        db.execute("UPDATE balances SET total_earned = total_earned + ? WHERE api_key = ?", (req.amount, req.api_key))
+    else:
+        db.execute("UPDATE balances SET total_spent = total_spent + ? WHERE api_key = ?", (abs(req.amount), req.api_key))
+
+    db.execute(
+        """INSERT INTO transactions (from_key, to_key, agent_name, credits, platform_fee, developer_credit, type, verb, timestamp)
+           VALUES (?, ?, NULL, ?, 0, 0, ?, NULL, ?)""",
+        ("admin", req.api_key, abs(req.amount), req.reason, now),
+    )
+    db.commit()
+    db.close()
+
+    return {"success": True, "new_balance": new_balance, "adjustment": req.amount}
+
+
+@app.post("/admin/seed-platform")
+def admin_seed_platform(request: Request):
+    _require_admin(request)
+    db = _get_db()
+    existing = db.execute("SELECT api_key FROM balances WHERE api_key = 'ae_platform'").fetchone()
+    now = datetime.now(timezone.utc).isoformat()
+
+    if existing:
+        db.close()
+        return {"status": "already_exists", "message": "ae_platform account already seeded"}
+
+    db.execute(
+        """INSERT INTO balances (api_key, github_username, email, credits, total_earned, total_spent, bonus_claimed, created_at, ip_address)
+           VALUES ('ae_platform', 'agenteazy-platform', 'platform@agenteazy.com', 0, 0, 0, 0, ?, 'internal')""",
+        (now,),
+    )
+    db.commit()
+    db.close()
+
+    return {"status": "seeded", "message": "ae_platform account created with 0 credits"}
 
 
 if __name__ == "__main__":
