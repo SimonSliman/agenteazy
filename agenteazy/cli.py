@@ -355,6 +355,8 @@ def wrap(
 def deploy(
     repo_url: str = typer.Argument(..., help="GitHub repo URL, user/repo shorthand, or local path"),
     local: bool = typer.Option(False, "--local", help="Deploy locally instead of to Modal"),
+    self_host: bool = typer.Option(False, "--self-host", help="Skip gateway upload — host the agent yourself and register its URL"),
+    host_url: str = typer.Option(None, "--host-url", help="Your agent's public URL (used with --self-host)"),
     port: int = typer.Option(8000, "--port", "-p", help="Port for the local server (only with --local)"),
     registry: Optional[str] = typer.Option(None, "--registry", help="Registry URL to auto-register after deploy"),
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
@@ -439,6 +441,38 @@ def deploy(
     with open(reqs_path, "w") as f:
         f.write("\n".join(all_deps) + "\n")
 
+    if self_host:
+        # Self-host mode: skip Modal upload entirely
+        console.print(f"\n[bold green]Agent wrapped![/bold green] Output: {output_dir}/\n")
+
+        registry_url = registry or get_registry_url()
+        if host_url:
+            # Register with the provided URL
+            if not registry_url:
+                from agenteazy.config import DEFAULT_REGISTRY_URL
+                registry_url = DEFAULT_REGISTRY_URL
+            _register_with_registry(registry_url, agent_config, host_url.rstrip("/"), analysis)
+            console.print(f"[bold green]Registered![/bold green] Your agent is live at: {host_url}")
+        else:
+            # Print self-host instructions
+            console.print("[bold]To make your agent live:[/bold]\n")
+            console.print(f"  1. Run it:")
+            console.print(f"     cd {output_dir}")
+            console.print(f"     pip install -r requirements.txt")
+            console.print(f"     python wrapper.py")
+            console.print(f"")
+            console.print(f"  2. Make it publicly accessible (ngrok, Fly.io, Railway, Render, etc.)")
+            console.print(f"")
+            console.print(f"  3. Register it:")
+            console.print(f"     agenteazy deploy {repo_url} --self-host --host-url https://your-public-url.com")
+            console.print(f"")
+            registry_url_display = registry_url or "https://your-registry-url"
+            console.print(f"  Or register manually:")
+            console.print(f'     curl -X POST {registry_url_display}/registry/register \\')
+            console.print(f'       -H "Content-Type: application/json" \\')
+            console.print(f'       -d \'{{"name": "{agent_config["name"]}", "url": "https://your-url.com", "language": "python", "verbs": ["ASK", "DO"]}}\'')
+        return
+
     if local:
         # Local deployment path
         console.print("[dim]Step 3/4: Installing dependencies (fastapi, uvicorn)...[/dim]")
@@ -508,8 +542,19 @@ def deploy(
         try:
             url = upload_to_volume(output_dir, analysis.repo_name, gateway_url)
         except Exception as e:
-            _handle_error(e, "volume upload")
-            raise typer.Exit(code=1)
+            error_msg = str(e).lower()
+            if "auth" in error_msg or "modal" in error_msg or "credential" in error_msg or "token" in error_msg:
+                console.print(f"\n[yellow]Gateway upload requires platform credentials.[/yellow]")
+                console.print(f"[yellow]Your agent is wrapped and ready — you can self-host it:[/yellow]\n")
+                console.print(f"  cd {output_dir}")
+                console.print(f"  pip install -r requirements.txt")
+                console.print(f"  python wrapper.py")
+                console.print(f"\n  Then register with: agenteazy deploy {repo_url} --self-host --host-url https://your-url.com\n")
+                console.print(f"[dim]Or run locally with: agenteazy deploy {repo_url} --local[/dim]")
+                return
+            else:
+                _handle_error(e, "volume upload")
+                raise typer.Exit(code=1)
 
         agent_name_sanitized = sanitize_agent_name(analysis.repo_name)
         gw = gateway_url.rstrip("/")
@@ -542,6 +587,52 @@ def deploy(
         else:
             console.print("\n[dim]No registry URL configured — skipping registration.[/dim]")
             console.print("[dim]  Set one with: agenteazy registry deploy[/dim]")
+
+
+@app.command()
+def register(
+    name: str = typer.Argument(..., help="Agent name"),
+    url: str = typer.Argument(..., help="Agent's public URL"),
+    description: str = typer.Option("", "--description", "-d", help="Agent description"),
+    price: int = typer.Option(0, "--price", help="Credits per call (0 = free)"),
+):
+    """Register an externally hosted agent in the AgentEazy registry."""
+    from agenteazy.config import get_registry_url, get_api_key, DEFAULT_REGISTRY_URL
+
+    registry_url = get_registry_url() or DEFAULT_REGISTRY_URL
+    api_key = get_api_key()
+
+    data = {
+        "name": name,
+        "description": description,
+        "url": url.rstrip("/"),
+        "language": "python",
+        "verbs": ["ASK", "DO"],
+    }
+    if api_key:
+        data["owner_api_key"] = api_key
+    if price > 0:
+        data["pricing"] = {"model": "per_call", "credits_per_call": price}
+
+    payload = json.dumps(data).encode()
+    req = urllib.request.Request(
+        f"{registry_url.rstrip('/')}/registry/register",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        console.print(f"[bold green]Registered![/bold green] Agent '{name}' is now discoverable at {registry_url}")
+        console.print(f"  Call it: curl -X POST {url}/ -d '{{\"verb\":\"DO\",\"payload\":{{\"data\":{{}}}}}}' -H 'Content-Type: application/json'")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode() if e.fp else ""
+        console.print(f"[bold red]Registration failed:[/bold red] {e.code} {body}")
+        raise typer.Exit(code=1)
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise typer.Exit(code=1)
 
 
 @app.command()
