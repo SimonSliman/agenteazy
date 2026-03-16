@@ -785,3 +785,4 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+# deployed 20260315T221804Z
