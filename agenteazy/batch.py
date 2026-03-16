@@ -254,12 +254,10 @@ def batch_process(
 
             # 7. Deploy (full mode)
             try:
-                from agenteazy.config import get_gateway_url
+                from agenteazy.config import get_gateway_url, DEFAULT_GATEWAY_URL
                 from agenteazy.modal_deployer import upload_to_volume
 
-                gateway_url = get_gateway_url()
-                if not gateway_url:
-                    raise RuntimeError("No gateway URL configured. Deploy gateway first.")
+                gateway_url = get_gateway_url() or DEFAULT_GATEWAY_URL
                 deploy_url = upload_to_volume(output_dir, analysis.repo_name, gateway_url)
             except Exception as e:
                 result = BatchResult(

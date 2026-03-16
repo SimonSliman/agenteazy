@@ -529,14 +529,8 @@ def deploy(
             _register_with_registry(registry, agent_config, url, analysis)
     else:
         # Gateway mode: upload to shared volume
-        gateway_url = get_gateway_url()
-        if not gateway_url:
-            console.print(
-                "[bold red]Error:[/bold red] No gateway URL configured.\n"
-                "[dim]  Deploy the gateway first: agenteazy gateway deploy\n"
-                "  Or use --legacy for per-agent Modal apps.[/dim]"
-            )
-            raise typer.Exit(code=1)
+        from agenteazy.config import DEFAULT_GATEWAY_URL
+        gateway_url = get_gateway_url() or DEFAULT_GATEWAY_URL
 
         console.print("[dim]Step 3/4: Uploading to gateway volume...[/dim]")
         try:
@@ -1046,13 +1040,9 @@ def gateway_deploy():
 @gateway_app.command("status")
 def gateway_status():
     """Show the current gateway URL and health."""
-    from agenteazy.config import get_gateway_url
+    from agenteazy.config import get_gateway_url, DEFAULT_GATEWAY_URL
 
-    gateway_url = get_gateway_url()
-    if not gateway_url:
-        console.print("\n[yellow]No gateway configured.[/yellow]")
-        console.print("[dim]Deploy one with: agenteazy gateway deploy[/dim]\n")
-        raise typer.Exit(code=1)
+    gateway_url = get_gateway_url() or DEFAULT_GATEWAY_URL
 
     console.print(f"\n[bold]Gateway URL:[/bold] {gateway_url}")
 
