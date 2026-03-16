@@ -229,10 +229,58 @@ def _load_agent_func(agent_name: str):
     return func, config
 
 
+def _load_agent_wrapper(agent_name: str):
+    """Load an agent's wrapper.py module (which handles all import/dispatch complexity).
+
+    The generated wrapper.py already handles relative imports, package structures,
+    class-based APIs, and complex dependency chains correctly.  By delegating to
+    the wrapper we avoid duplicating that logic in the gateway.
+
+    Returns the loaded wrapper module, or None if no wrapper.py exists (legacy agents).
+    """
+    cache_key = f"_wrapper_{agent_name}"
+    if cache_key in _agent_modules:
+        return _agent_modules[cache_key]
+
+    agent_dir = os.path.join(AGENTS_ROOT, agent_name)
+    wrapper_path = os.path.join(agent_dir, "wrapper.py")
+
+    if not os.path.isfile(wrapper_path):
+        # No wrapper — caller should fall back to _load_agent_func
+        return None
+
+    # Install dependencies before loading
+    _install_agent_deps(agent_name)
+
+    # Set AGENTEAZY_REPO_PATH so the wrapper's module-level code picks up the
+    # correct repo directory.  After exec_module the wrapper stores it locally,
+    # so we restore the env var to avoid cross-agent contamination.
+    repo_path = os.path.join(agent_dir, "repo")
+    old_repo_path = os.environ.get("AGENTEAZY_REPO_PATH")
+    os.environ["AGENTEAZY_REPO_PATH"] = repo_path
+
+    try:
+        spec = importlib.util.spec_from_file_location(
+            f"agenteazy_wrapper_{agent_name}", wrapper_path,
+            submodule_search_locations=[agent_dir],
+        )
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        if old_repo_path is not None:
+            os.environ["AGENTEAZY_REPO_PATH"] = old_repo_path
+        else:
+            os.environ.pop("AGENTEAZY_REPO_PATH", None)
+
+    _agent_modules[cache_key] = mod
+    return mod
+
+
 def _invalidate_cache(agent_name: str) -> None:
     """Remove an agent from caches so it reloads on next request."""
     _agent_configs.pop(agent_name, None)
     _agent_modules.pop(agent_name, None)
+    _agent_modules.pop(f"_wrapper_{agent_name}", None)
 
 
 def _merge_context(func, kwargs: dict, ctx: dict) -> dict:
@@ -495,7 +543,12 @@ async def agent_ask(agent_name: str, request: Request, body: dict = None):
     if not toll.get("ok"):
         return JSONResponse(status_code=402, content={"error": toll["error"]})
 
-    func, config = _load_agent_func(agent_name)
+    wrapper_mod = _load_agent_wrapper(agent_name)
+    if wrapper_mod and hasattr(wrapper_mod, '_get_entry_func'):
+        func = wrapper_mod._get_entry_func()
+        config = _load_agent_config(agent_name)
+    else:
+        func, config = _load_agent_func(agent_name)
 
     result = {
         "name": config.get("name", agent_name),
@@ -535,15 +588,22 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
     if not toll.get("ok"):
         return JSONResponse(status_code=402, content={"error": toll["error"]})
 
-    func, config = _load_agent_func(agent_name)
     payload = (body or {}).get("input", body or {})
 
     # Merge shared context into data before dispatch
     ctx = _agent_context.get(agent_name)
     merged_data = {**payload, **ctx} if ctx else payload
 
+    wrapper_mod = _load_agent_wrapper(agent_name)
+    if wrapper_mod and hasattr(wrapper_mod, '_get_entry_func') and hasattr(wrapper_mod, '_dispatch'):
+        func = wrapper_mod._get_entry_func()
+        dispatch_fn = wrapper_mod._dispatch
+    else:
+        func, _config = _load_agent_func(agent_name)
+        dispatch_fn = _dispatch_call
+
     try:
-        future = _executor.submit(_dispatch_call, func, merged_data)
+        future = _executor.submit(dispatch_fn, func, merged_data)
         result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
 
         # Deduct after successful execution for paid agents
@@ -634,7 +694,14 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
     """Dispatch a verb to the appropriate handler."""
 
     if verb == "ASK":
-        func, config = _load_agent_func(agent_name)
+        wrapper_mod = _load_agent_wrapper(agent_name)
+        if wrapper_mod and hasattr(wrapper_mod, '_get_entry_func'):
+            # Use wrapper's entry func (handles classes, packages, relative imports)
+            func = wrapper_mod._get_entry_func()
+            config = _load_agent_config(agent_name)
+        else:
+            # Fallback for legacy agents without wrapper.py
+            func, config = _load_agent_func(agent_name)
         return {
             "name": config.get("name", agent_name),
             "description": config.get("description", ""),
@@ -647,7 +714,6 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
         }
 
     if verb == "DO":
-        func, config = _load_agent_func(agent_name)
         # Accept both {"data": {...}} and {"input": {...}} payload formats
         data = payload.get("data") or payload.get("input") or {}
 
@@ -655,8 +721,18 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
         ctx = _agent_context.get(agent_name)
         merged_data = {**data, **ctx} if ctx else data
 
+        wrapper_mod = _load_agent_wrapper(agent_name)
+        if wrapper_mod and hasattr(wrapper_mod, '_get_entry_func') and hasattr(wrapper_mod, '_dispatch'):
+            # Use wrapper's own dispatch (handles classes, relative imports, packages, etc.)
+            func = wrapper_mod._get_entry_func()
+            dispatch_fn = wrapper_mod._dispatch
+        else:
+            # Fallback for legacy agents without wrapper.py
+            func, _config = _load_agent_func(agent_name)
+            dispatch_fn = _dispatch_call
+
         try:
-            future = _executor.submit(_dispatch_call, func, merged_data)
+            future = _executor.submit(dispatch_fn, func, merged_data)
             result = future.result(timeout=FUNCTION_TIMEOUT_SECONDS)
             return {"status": "completed", "output": result}
         except FuturesTimeoutError:
