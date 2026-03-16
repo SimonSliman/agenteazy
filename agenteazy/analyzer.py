@@ -383,11 +383,22 @@ def read_dependencies(repo_path: str) -> tuple[list[str], dict]:
     return [], meta
 
 
+_MAIN_API_NAMES = {
+    "parse", "detect", "convert", "format", "clean", "validate",
+    "transform", "analyze", "extract", "encode", "decode",
+    "compress", "decompress", "encrypt", "decrypt", "translate",
+    "slugify", "markdown", "beautify", "fix", "sanitize",
+    "tokenize", "classify", "predict", "generate", "render",
+    "compile", "evaluate", "serialize", "deserialize",
+    "emojize", "demojize", "humanize", "pluralize", "singularize",
+    "cut", "get", "request", "send", "load", "dump",
+}
+
 _INTERESTING_METHODS = {
     "__call__", "run", "process", "predict", "execute",
     "handle", "generate", "analyze", "transform", "convert", "forward",
     "__init__",
-}
+} | _MAIN_API_NAMES
 
 
 def extract_functions(filepath: str, repo_path: str, parse_errors: list[str] | None = None) -> list[DetectedFunction]:
@@ -514,7 +525,38 @@ def _detect_web_framework(tree: ast.Module, rel_path: str, parse_errors: list[st
             return
 
 
-def score_entry_point(func: DetectedFunction, filename: str) -> int:
+def _get_init_exports(repo_path: str, package_dir: str) -> set[str]:
+    """Parse __init__.py to find explicitly exported function names."""
+    init_path = os.path.join(repo_path, package_dir, "__init__.py")
+    if not os.path.isfile(init_path):
+        return set()
+
+    try:
+        source = Path(init_path).read_text(encoding="utf-8", errors="ignore")
+        tree = ast.parse(source)
+    except (SyntaxError, UnicodeDecodeError):
+        return set()
+
+    exports = set()
+
+    for node in ast.walk(tree):
+        # from .module import func_name
+        if isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                exports.add(alias.asname or alias.name)
+        # __all__ = ["func1", "func2"]
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "__all__":
+                    if isinstance(node.value, (ast.List, ast.Tuple)):
+                        for elt in node.value.elts:
+                            if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                                exports.add(elt.value)
+
+    return exports
+
+
+def score_entry_point(func: DetectedFunction, filename: str, init_exports: set[str] | None = None) -> int:
     """
     Score a function as a potential entry point.
     Higher = more likely to be the main function.
@@ -528,12 +570,57 @@ def score_entry_point(func: DetectedFunction, filename: str) -> int:
     if basename == "convert" or basename == "process":
         score += 8
 
+    # Signal 1: __init__.py bonus — functions defined here ARE the public API
+    # Top-level __init__.py gets full bonus; sub-package __init__.py gets less
+    if basename == "__init__":
+        depth_of_init = filename.count("/")
+        if depth_of_init <= 1:
+            score += 25  # e.g. jieba/__init__.py
+        else:
+            score += 10  # e.g. jieba/posseg/__init__.py
+
     # Function name signals
     name = func.name.lower()
     if name in ("main", "run", "process", "convert", "execute", "handle"):
         score += 10
     if name.startswith(("get_", "fetch_", "create_", "generate_", "build_")):
         score += 5
+
+    # Signal 2: Package name match
+    parts = os.path.dirname(filename).replace("\\", "/").split("/")
+    pkg_name = parts[-1].lower() if parts and parts[-1] else ""
+    if pkg_name and (name in pkg_name or pkg_name in name):
+        score += 20
+    # Also match common patterns: "python-X" package → function "X"
+    pkg_clean = pkg_name.replace("python-", "").replace("python_", "").replace("-", "").replace("_", "")
+    if pkg_clean and (name == pkg_clean or name.startswith(pkg_clean) or pkg_clean.startswith(name)):
+        score += 20
+
+    # Signal 3: Common main-API function names
+    if name in _MAIN_API_NAMES:
+        score += 15
+
+    # Signal 4: File depth penalty — deeper files are more internal
+    depth = filename.count("/")
+    if depth > 1:
+        score -= (depth - 1) * 3
+
+    # Signal 5: Internal utility penalty
+    if name.startswith("get_") and len(name) > 5:
+        score -= 10
+    if name.startswith(("_check", "_validate", "_parse", "_build", "_make")):
+        score -= 15
+
+    # Signal 6: Exported from __init__.py detection
+    if init_exports and func.name in init_exports:
+        score += 30
+
+    # Signal 7: Single-arg "main input" functions
+    num_args = len(func.args)
+    if 1 <= num_args <= 3:
+        score += 10
+    elif num_args > 5:
+        score -= 5
 
     # Class method scoring
     if func.class_name:
@@ -574,13 +661,46 @@ def score_entry_point(func: DetectedFunction, filename: str) -> int:
     return score
 
 
-def suggest_entry_point(functions: list[DetectedFunction]) -> Optional[DetectedFunction]:
+def suggest_entry_point(functions: list[DetectedFunction], repo_path: str = "") -> Optional[DetectedFunction]:
     """Pick the most likely entry point from detected functions."""
     if not functions:
         return None
 
+    # Find package directory and exports
+    # Prefer the package whose name matches the repo name
+    init_exports: set[str] = set()
+    if repo_path:
+        repo_name = os.path.basename(repo_path.rstrip("/")).lower()
+        repo_clean = repo_name.replace("python-", "").replace("python_", "").replace("-", "").replace("_", "")
+
+        def _find_best_package(search_dir: str) -> set[str]:
+            """Find exports from the best-matching package in search_dir."""
+            try:
+                candidates = [
+                    d for d in os.listdir(search_dir)
+                    if os.path.isfile(os.path.join(search_dir, d, "__init__.py"))
+                    and not d.startswith(("test", "."))
+                ]
+            except OSError:
+                return set()
+            if not candidates:
+                return set()
+            # Prefer package matching repo name
+            d_clean = {d: d.lower().replace("-", "").replace("_", "") for d in candidates}
+            for d in candidates:
+                if d_clean[d] == repo_clean or d.lower() == repo_name:
+                    return _get_init_exports(search_dir, d)
+            # Fallback: first non-test package
+            return _get_init_exports(search_dir, candidates[0])
+
+        init_exports = _find_best_package(repo_path)
+        # Also check src/ layout
+        src_dir = os.path.join(repo_path, "src")
+        if not init_exports and os.path.isdir(src_dir):
+            init_exports = _find_best_package(src_dir)
+
     scored = [
-        (func, score_entry_point(func, func.file))
+        (func, score_entry_point(func, func.file, init_exports=init_exports))
         for func in functions
     ]
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -748,7 +868,7 @@ def analyze_repo(url: str) -> RepoAnalysis:
         )
 
     # Step 5: Suggest entry point
-    analysis.suggested_entry = suggest_entry_point(all_functions)
+    analysis.suggested_entry = suggest_entry_point(all_functions, repo_path=local_path)
 
     # Step 6: Check for agent.json
     analysis.has_agent_json, analysis.agent_json_path = check_agent_json(local_path)
