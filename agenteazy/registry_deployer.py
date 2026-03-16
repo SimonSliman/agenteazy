@@ -73,6 +73,14 @@ def deploy_registry() -> str:
 def _generate_deploy_script(registry_src: str) -> str:
     """Generate the Modal deployment script for the registry."""
     registry_src_repr = repr(registry_src)
+    admin_key = os.environ.get("AGENTEAZY_ADMIN_KEY", "")
+    admin_key_repr = repr(admin_key)
+
+    # Build secrets line conditionally
+    if admin_key:
+        secrets_line = f'secrets=[modal.Secret.from_dict({{"AGENTEAZY_ADMIN_KEY": {admin_key_repr}}})],\n'
+    else:
+        secrets_line = ""
 
     return f'''"""Auto-generated Modal deployment script for agenteazy-registry."""
 
@@ -97,7 +105,7 @@ image = (
     memory=512,
     cpu=1.0,
     volumes={{"/data": volume}},
-)
+    {secrets_line})
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def serve():
