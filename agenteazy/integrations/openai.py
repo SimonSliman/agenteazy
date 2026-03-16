@@ -1,5 +1,6 @@
 """OpenAI integration for AgentEazy."""
 
+import json
 from typing import Any
 
 from agenteazy.config import DEFAULT_GATEWAY_URL, DEFAULT_REGISTRY_URL
