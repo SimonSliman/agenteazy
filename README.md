@@ -1,51 +1,95 @@
 # AgentEazy
 
-**Turn any GitHub repo into an interoperable AI agent in one command.**
+**Turn any Python utility into a callable AI tool in one command.**
 
-Open source · MIT Licensed · [agenteazy.com](https://agenteazy.com)
+Your code becomes a live API that any AI agent can find, call, and pay — without rewriting a single line.
+
+[![PyPI](https://img.shields.io/pypi/v/agenteazy)](https://pypi.org/project/agenteazy/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-82%20passing-brightgreen)]()
+
+[Website](https://agenteazy.com) · [Dashboard](https://agenteazy.com/dashboard) · [Registry](https://agenteazy.com/agents) · [Docs](https://agenteazy.com/docs)
 
 ---
 
-## Quick Start
+## Try it right now
+
+No install needed. Call a live agent from your terminal:
+
+```bash
+curl -s -X POST https://simondusable--agenteazy-gateway-serve.modal.run/agent/zxcvbn-python/ \
+  -H "Content-Type: application/json" \
+  -d '{"verb":"DO","payload":{"data":{"password":"monkey123"}}}' | python3 -m json.tool
+```
+
+```json
+{
+  "status": "completed",
+  "output": {
+    "score": 1,
+    "feedback": {
+      "warning": "This is a very common password.",
+      "suggestions": ["Add another word or two. Uncommon words are better."]
+    }
+  }
+}
+```
+
+That's a real GitHub repo ([zxcvbn-python](https://github.com/dwolfhub/zxcvbn-python)), auto-wrapped and live. 18+ more in the registry.
+
+---
+
+## Deploy your own agent
 
 ```bash
 pip install agenteazy
-agenteazy signup <your-github-username>
+agenteazy signup your-github-username --email you@example.com
 agenteazy deploy github.com/you/your-repo
 ```
 
-Your repo is now a live agent. Call it:
+Done. Your repo is live. Every AI agent on earth can now find and call it.
 
-```bash
-curl -X POST https://simondusable--agenteazy-gateway-serve.modal.run/agent/your-repo/ \
-  -H "Content-Type: application/json" \
-  -d '{"verb":"DO","payload":{"data":{"input":"hello"}}}'
-```
+### What happens under the hood
+
+1. **Analyze** — Clones the repo, parses the AST, detects the main public API function
+2. **Wrap** — Generates a FastAPI wrapper that handles imports, dependencies, and dispatch
+3. **Upload** — Pushes to serverless infrastructure (idle agents cost $0)
+4. **Register** — Adds to the public registry so other agents can discover it
 
 ---
 
 ## Python SDK
-
-```bash
-pip install agenteazy
-```
 
 ```python
 from agenteazy import AgentEazy
 
 client = AgentEazy()
 
-# Search for agents
+# Discover agents
 agents = client.find("password strength")
 
-# Call an agent
-result = client.do("zxcvbn-python", {"password": "test123"})
-print(result)
+# Call agents
+result = client.do("zxcvbn-python", {"password": "monkey123"})
+# → {"score": 1, "feedback": {"warning": "This is a very common password."}}
+
+result = client.do("dateparser", {"date_string": "tomorrow at 3pm"})
+# → "2026-03-17T15:00:00"
+
+result = client.do("langdetect", {"text": "Bonjour le monde"})
+# → "fr"
+
+result = client.do("python-ftfy", {"text": "Ã©mile dupont"})
+# → "émile dupont"
+
+result = client.do("autopep8", {"source": "x=   1\nif  x==1:\n  print( 'hello' )"})
+# → "x = 1\nif x == 1:\n    print('hello')\n"
 ```
 
 ---
 
 ## LangChain Integration
+
+Every agent becomes a LangChain `BaseTool`:
 
 ```bash
 pip install agenteazy[langchain]
@@ -54,11 +98,10 @@ pip install agenteazy[langchain]
 ```python
 from agenteazy.integrations.langchain import AgentEazyTool, AgentEazyToolkit
 
-# Single tool from one agent
 tool = AgentEazyTool.from_agent("zxcvbn-python")
-result = tool.run({"password": "test123"})
+result = tool.invoke({"password": "test123"})
 
-# Toolkit — multiple tools from a registry search
+# Discover multiple tools from the registry
 toolkit = AgentEazyToolkit()
 tools = toolkit.get_tools(query="text processing", limit=5)
 ```
@@ -75,159 +118,174 @@ pip install agenteazy[crewai]
 from agenteazy.integrations.crewai import AgentEazyCrewTool
 
 tool = AgentEazyCrewTool.from_agent("zxcvbn-python")
-result = tool.run({"password": "test123"})
 ```
 
 ---
 
-## CLI Commands
+## Live Agent Registry
 
-### Core
+18 agents you can call right now, all auto-wrapped from real GitHub repos:
 
-| Command | Description |
-|---------|-------------|
-| `agenteazy analyze <repo>` | Detect language, deps, entry point |
-| `agenteazy wrap <repo>` | Generate agent.json + FastAPI wrapper |
-| `agenteazy wrap <repo> --entry func` | Specify entry function |
-| `agenteazy wrap <repo> --env KEY=VAL` | Set environment variables |
-| `agenteazy deploy <repo>` | Deploy to gateway + register |
-| `agenteazy deploy <repo> --local` | Test locally on port 8000 |
-| `agenteazy deploy <repo> --price 10` | Deploy as paid agent (10 credits/call) |
+| Agent | What it does | Try it |
+|-------|-------------|--------|
+| [zxcvbn-python](https://github.com/dwolfhub/zxcvbn-python) | Password strength scoring | `{"password":"monkey123"}` → score 1/4 |
+| [langdetect](https://github.com/Mimino666/langdetect) | Detect text language | `{"text":"Bonjour"}` → `"fr"` |
+| [dateparser](https://github.com/scrapinghub/dateparser) | Parse natural language dates | `{"date_string":"tomorrow at 3pm"}` → datetime |
+| [python-ftfy](https://github.com/rspeer/python-ftfy) | Fix broken Unicode | `{"text":"Ã©mile"}` → `"émile"` |
+| [autopep8](https://github.com/hhatto/autopep8) | Format Python to PEP 8 | `{"source":"x=  1"}` → `"x = 1\n"` |
+| [validators](https://github.com/python-validators/validators) | Validate emails, URLs, IPs | `{"value":"test@example.com"}` → `true` |
+| [python-slugify](https://github.com/un33k/python-slugify) | Text to URL slug | `{"text":"Hello World!"}` → `"hello-world"` |
+| [emoji](https://github.com/carpedm20/emoji) | Emojize/demojize text | `{"string":":thumbs_up:"}` → 👍 |
+| [xmltodict](https://github.com/martinblech/xmltodict) | XML to JSON dict | `{"xml_input":"<a>1</a>"}` → `{"a":"1"}` |
+| [mistune](https://github.com/lepture/mistune) | Fast Markdown → HTML | `{"s":"**bold**"}` → `"<strong>bold</strong>"` |
+| [dateutil](https://github.com/dateutil/dateutil) | Parse date strings | `{"timestr":"March 5th 2024"}` → datetime |
+| [arrow](https://github.com/arrow-py/arrow) | Date/time with timezone | `{}` → current datetime |
+| [prettytable](https://github.com/jazzband/prettytable) | Parse HTML tables | HTML → structured rows |
+| [python-markdown2](https://github.com/trentm/python-markdown2) | Markdown → HTML | `{"text":"# Hello"}` → `"<h1>Hello</h1>"` |
+| [python-markdownify](https://github.com/matthewwithanm/python-markdownify) | HTML → Markdown | `{"html":"<h1>Hello</h1>"}` → `"# Hello"` |
+| [num2words](https://github.com/savoirfairelinux/num2words) | Numbers to words | `{"number":42}` → `"forty-two"` |
+| [shortuuid](https://github.com/skorokithakis/shortuuid) | Generate short UUIDs | `{}` → `"N6nquzbtjAF..."` |
+| [humanize](https://github.com/python-humanize/humanize) | Natural language lists | `{"items":["Alice","Bob"]}` → `"Alice and Bob"` |
 
-### Batch
-
-| Command | Description |
-|---------|-------------|
-| `agenteazy batch-analyze <dir>` | Analyze all repos in a directory |
-| `agenteazy batch-deploy <dir>` | Deploy multiple repos at once |
-| `agenteazy batch-deploy <dir> --wrap-only` | Wrap without deploying |
-| `agenteazy batch-deploy <dir> --dry-run` | Preview without changes |
-| `agenteazy batch-deploy <dir> --entry-file main.py` | Override entry file |
-| `agenteazy batch-deploy <dir> --skip-existing` | Skip already-deployed agents |
-| `agenteazy batch-deploy <dir> --max-failures 3` | Stop after N failures |
-
-### Account
-
-| Command | Description |
-|---------|-------------|
-| `agenteazy signup <username>` | Create account, get API key |
-| `agenteazy balance` | Check credit balance |
-| `agenteazy transactions` | View transaction history |
-
-### Registry
-
-| Command | Description |
-|---------|-------------|
-| `agenteazy search "query"` | Search agent registry |
-| `agenteazy list` | List all registered agents |
-| `agenteazy status` | Show deployment status |
-
-### Environment Variables
-
-| Command | Description |
-|---------|-------------|
-| `agenteazy env list` | List configured env vars |
-| `agenteazy env set KEY VAL` | Set an environment variable |
-| `agenteazy env remove KEY` | Remove an environment variable |
-
-### Infrastructure
-
-| Command | Description |
-|---------|-------------|
-| `agenteazy gateway deploy` | Deploy gateway to Modal |
-| `agenteazy gateway status` | Gateway health check |
-| `agenteazy registry deploy` | Deploy registry to Modal |
-| `agenteazy registry start` | Run registry locally |
-| `agenteazy stop <name>` | Stop a deployed agent |
-| `agenteazy logs <name>` | View agent logs |
+Browse all at [agenteazy.com/agents](https://agenteazy.com/agents).
 
 ---
 
-## AgentLang — 10 Universal Verbs
+## What repos work best
 
-Every agent speaks the same protocol. One HTTP POST, one envelope:
+AgentEazy auto-detects the right entry point for stateless Python utilities — functions that take input and return output.
 
-```json
-{"verb": "DO", "payload": {"data": {"input": "hello"}}}
+| Works great | Examples |
+|------------|---------|
+| Text processing | slugify, ftfy, emoji, markdown2 |
+| Validation & parsing | validators, dateparser, dateutil |
+| Security tools | zxcvbn (passwords), nh3 (HTML sanitization) |
+| Code formatting | autopep8 |
+| Data conversion | xmltodict, markdownify, num2words |
+| Language detection | langdetect |
+
+| Needs `--entry` flag | Why |
+|---------------------|-----|
+| Large repos with many functions | Auto-detect may pick a helper instead of the main API |
+| Class-based APIs | Specify `--entry "file.py:Class.method"` |
+
+| Not a good fit | Why |
+|----------------|-----|
+| HTTP clients (requests, boto3) | They make outbound calls, not pure functions |
+| Frameworks (Flask, Django) | Already have their own endpoints |
+| Heavy ML models | Cold start too slow for serverless |
+
+Override the entry point when needed:
+
+```bash
+agenteazy deploy github.com/you/repo --entry "mypackage/core.py:process"
+agenteazy deploy github.com/you/repo --entry "mypackage/model.py:MyClass.predict"
 ```
-
-| Verb | Purpose | Status |
-|------|---------|--------|
-| DO | Execute a task | Working ✅ |
-| ASK | Query capabilities | Working ✅ |
-| FIND | Search the registry | Working ✅ |
-| PAY | Transfer credits between agents | Working ✅ |
-| SHARE | Pass context to an agent | Working ✅ |
-| REPORT | Get audit log and recent calls | Working ✅ |
-| STOP | Halt a running task | Working ✅ |
-| WATCH | Subscribe to events | Stub 🔜 |
-| TRUST | Establish authenticated session | Stub 🔜 |
-| LEARN | Ingest new knowledge | Stub 🔜 |
 
 ---
 
 ## TollBooth — Agent Credits
 
-Agents can charge credits per call. Developers earn 80%, platform keeps 20% for infrastructure.
+Agents can charge credits per call. Set a price and the gateway handles billing.
 
 ```bash
-agenteazy deploy github.com/you/ml-model --price 10
+agenteazy deploy github.com/you/your-repo --price 10
 ```
 
-No billing code needed. Set a price and the gateway handles everything.
+- **Free by default** — no credits needed to call free agents
+- **You set the price** — 1 credit, 10, 100 — your choice
+- **80/20 split** — you keep 80%, platform takes 20% for infrastructure
+- **50 free credits** on signup, buy more at [agenteazy.com/dashboard](https://agenteazy.com/dashboard)
 
-- **Free agents**: 0 credits per call (default)
-- **Paid agents**: Set any price with `--price`
-- **Revenue split**: 80% to agent developer, 20% platform fee
-- **Top up**: `agenteazy balance` to check, credits added via signup
+---
+
+## AgentLang — 10 Universal Verbs
+
+One protocol for all agents. One HTTP POST, one envelope:
+
+```json
+POST /agent/{name}/
+{"verb": "DO", "payload": {"data": {"input": "hello"}}}
+```
+
+| Verb | What it does | Status |
+|------|-------------|--------|
+| **DO** | Execute the agent's main function | Live ✅ |
+| **ASK** | Query capabilities and parameters | Live ✅ |
+| **FIND** | Search the registry for agents | Live ✅ |
+| **PAY** | Transfer credits between agents | Live ✅ |
+| **SHARE** | Pass context between calls | Live ✅ |
+| **REPORT** | Get audit log | Live ✅ |
+| **STOP** | Halt a running task | Live ✅ |
+| WATCH | Subscribe to events | Planned |
+| TRUST | Authenticated sessions | Planned |
+| LEARN | Ingest new knowledge | Planned |
+
+---
+
+## CLI Reference
+
+```bash
+# Deploy
+agenteazy deploy <repo>                    # Full pipeline
+agenteazy deploy <repo> --local            # Test locally first
+agenteazy deploy <repo> --price 10         # Paid agent
+agenteazy deploy <repo> --entry "f.py:fn"  # Override entry point
+agenteazy deploy <repo> --env KEY=VALUE    # Inject env vars
+
+# Analyze & Wrap
+agenteazy analyze <repo>                   # Inspect without deploying
+agenteazy wrap <repo>                      # Generate wrapper only
+agenteazy batch-deploy <repos.txt>         # Deploy from file
+
+# Account
+agenteazy signup <username> --email <email>  # Get API key + 50 credits
+agenteazy balance                            # Check credits
+agenteazy transactions                       # View history
+
+# Registry
+agenteazy search "query"                   # Find agents
+agenteazy list                             # List all agents
+agenteazy status                           # Health check
+```
 
 ---
 
 ## Architecture
 
 ```
-Developer: agenteazy deploy <repo>
-    |
-    |-- 1. ANALYZE  -> Clone, detect Python, parse AST
-    |-- 2. WRAP     -> Generate agent.json + FastAPI wrapper
-    |-- 3. UPLOAD   -> Push to serverless volume
-    |-- 4. REGISTER -> Add to public registry
-    +-- 5. LIVE     -> Callable at gateway/agent/{name}/
+agenteazy deploy <repo>
+    │
+    ├── ANALYZE  → Clone, parse AST, detect public API function
+    ├── WRAP     → Generate FastAPI wrapper with full import handling
+    ├── UPLOAD   → Push to serverless volume (idle = $0)
+    ├── REGISTER → Add to searchable registry
+    └── LIVE     → Callable at gateway/agent/{name}/
 
-Gateway (1 endpoint) ---- Registry (SQLite)
-    |                          |
-    +-- Agent Volume           +-- TollBooth (credits)
-        /agents/repo-a/            /tollbooth/balance
-        /agents/repo-b/            /tollbooth/deduct
-        /agents/repo-c/            /tollbooth/earn
+Gateway (serves all agents)  ←→  Registry (search + credits)
+    │                                    │
+    └── Agent Volume                     └── TollBooth
+        /agents/zxcvbn-python/               Signup, balance,
+        /agents/langdetect/                  deduct, earn, transfer
+        /agents/dateparser/
+        ... (36 agents)
 ```
-
----
-
-## Supported Repo Types
-
-| Type | Supported |
-|------|-----------|
-| `requirements.txt` | ✅ |
-| `pyproject.toml` | ✅ |
-| `setup.py` | ✅ |
-| Class-based agents | ✅ |
-| `src/` layout | ✅ |
-| Environment variables | ✅ |
 
 ---
 
 ## Contributing
 
-We welcome contributions:
+Best first contribution: **OpenAI Function Calling integration**. Same pattern as the LangChain wrapper — one file, self-contained. See `agenteazy/integrations/langchain.py` as a template.
 
-1. Open an issue describing what you want to build or fix
-2. We'll discuss the approach together
-3. Clone the repo and create a feature branch
-4. Submit a Pull Request referencing the issue
+```bash
+git clone https://github.com/SimonSliman/agenteazy
+cd agenteazy
+pip install -e ".[dev]"
+pytest tests/ -q  # 82 tests
+```
 
-Questions? Open an issue or email hello@agenteazy.com
+---
 
 ## License
 
-MIT — see [LICENSE](LICENSE) for details.
+MIT
