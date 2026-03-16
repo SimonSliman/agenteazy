@@ -1,3 +1,4 @@
+# force-redeploy
 """AgentEazy Registry — central directory for wrapped agents."""
 
 import json
@@ -723,3 +724,4 @@ def admin_seed_platform(request: Request):
 if __name__ == "__main__":
     port = int(os.environ.get("REGISTRY_PORT", "8001"))
     uvicorn.run(app, host="0.0.0.0", port=port)
+# registry-owner-endpoint 20260316T220046Z

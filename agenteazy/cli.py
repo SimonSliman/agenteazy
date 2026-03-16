@@ -445,7 +445,7 @@ def deploy(
         # Self-host mode: skip Modal upload entirely
         console.print(f"\n[bold green]Agent wrapped![/bold green] Output: {output_dir}/\n")
 
-        registry_url = registry or get_registry_url()
+        registry_url = registry or get_registry_url() or DEFAULT_REGISTRY_URL
         if host_url:
             # Register with the provided URL
             if not registry_url:
@@ -574,7 +574,7 @@ def deploy(
         ))
 
         # Auto-register: use --registry flag, or fall back to configured registry
-        registry_url = registry or get_registry_url()
+        registry_url = registry or get_registry_url() or DEFAULT_REGISTRY_URL
         if registry_url:
             console.print(f"\n[dim]Registering with registry at {registry_url}...[/dim]")
             _register_with_registry(registry_url, agent_config, f"{gw}/agent/{agent_name_sanitized}", analysis)
