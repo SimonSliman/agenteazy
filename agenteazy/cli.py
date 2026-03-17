@@ -198,6 +198,66 @@ def _parse_entry_override(entry_str: str, local_path: str) -> DetectedFunction:
     )
 
 
+def _print_curl_example(analysis, base_url, agent_name, prefix=""):
+    """Print a ready-to-paste curl command using detected entry point args."""
+    entry = analysis.suggested_entry
+    deploy_url = f"{base_url}/agent/{agent_name}/"
+
+    if entry and entry.args:
+        # Build example data from arg names
+        example_data = {}
+        for arg in entry.args[:5]:  # Limit to first 5 args
+            if arg in ("text", "s", "source", "html", "xml_input", "content"):
+                example_data[arg] = "hello world"
+            elif arg in ("password", "passwd"):
+                example_data[arg] = "test123"
+            elif arg in ("url", "uri", "link"):
+                example_data[arg] = "https://example.com"
+            elif arg in ("number", "num", "n"):
+                example_data[arg] = 42
+            elif arg in ("items", "values", "list"):
+                example_data[arg] = ["item1", "item2"]
+            else:
+                example_data[arg] = f"your_{arg}_here"
+
+        data_str = json.dumps({"verb": "DO", "payload": {"data": example_data}})
+
+        console.print(f"\n{prefix}[dim]Try it:[/dim]")
+        console.print(f"  curl -s -X POST {deploy_url} \\")
+        console.print(f"    -H 'Content-Type: application/json' \\")
+        console.print(f"    -d '{data_str}' | python3 -m json.tool")
+        console.print()
+    else:
+        console.print(f"\n{prefix}[dim]Try it:[/dim]")
+        console.print(f"  curl -s -X POST {deploy_url} \\")
+        console.print(f"    -H 'Content-Type: application/json' \\")
+        console.print(f"    -d '{{\"verb\":\"DO\",\"payload\":{{\"data\":{{}}}}}}' | python3 -m json.tool")
+        console.print()
+
+
+def _print_fit_warnings(analysis):
+    """Check for patterns that suggest the repo may not be a good fit."""
+    fit_warnings = []
+    if analysis.errors:
+        for err in analysis.errors:
+            if "subprocess" in err.lower():
+                fit_warnings.append("Uses subprocess — may need system dependencies")
+            if "flask" in err.lower() or "fastapi" in err.lower():
+                fit_warnings.append("This is a web framework — it already has endpoints. Use --entry to specify a utility function.")
+
+    # Check if detected entry looks like an HTTP client function
+    if analysis.suggested_entry:
+        entry_name = analysis.suggested_entry.name.lower()
+        if entry_name in ("get", "post", "put", "delete", "request", "fetch"):
+            fit_warnings.append("Detected entry looks like an HTTP client function. This repo may make outbound network calls.")
+
+    if fit_warnings:
+        console.print(f"\n[yellow]Repo fit warnings:[/yellow]")
+        for w in fit_warnings:
+            console.print(f"  [yellow]![/yellow] {w}")
+        console.print()
+
+
 # ── Commands ─────────────────────────────────────────────────────────
 
 @app.command()
@@ -217,6 +277,8 @@ def analyze(repo_url: str = typer.Argument(..., help="GitHub repo URL or user/re
         if not analysis.language:
             console.print("\n[dim]Cannot continue without a supported language.[/dim]")
             raise typer.Exit(code=1)
+
+    _print_fit_warnings(analysis)
 
     # Summary table
     table = Table(title=f"Analysis: {analysis.repo_name}", show_header=False)
@@ -268,6 +330,8 @@ def wrap(
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
+
+    _print_fit_warnings(analysis)
 
     # Apply --entry override if provided
     if entry:
@@ -350,6 +414,10 @@ def wrap(
         title="AgentEazy",
     ))
 
+    # Print a ready-to-paste curl example
+    agent_name_sanitized = sanitize_agent_name(analysis.repo_name)
+    _print_curl_example(analysis, "http://localhost:8000", agent_name_sanitized)
+
 
 @app.command()
 def deploy(
@@ -379,6 +447,8 @@ def deploy(
     if analysis.errors:
         for err in analysis.errors:
             console.print(f"[yellow]Warning:[/yellow] {err}")
+
+    _print_fit_warnings(analysis)
 
     # Apply --entry override if provided
     if entry:
@@ -466,6 +536,10 @@ def deploy(
             console.print(f"  3. Register it:")
             console.print(f"     agenteazy deploy {repo_url} --self-host --host-url https://your-public-url.com")
             console.print(f"")
+
+            # Print curl example for self-host
+            _print_curl_example(analysis, "https://your-public-url.com", sanitize_agent_name(analysis.repo_name), prefix="  4. ")
+
             registry_url_display = registry_url or "https://your-registry-url"
             console.print(f"  Or register manually:")
             console.print(f'     curl -X POST {registry_url_display}/registry/register \\')
@@ -572,6 +646,9 @@ def deploy(
             f"Gateway: {gw}/agents",
             title="AgentEazy - Gateway Deploy",
         ))
+
+        # Print a ready-to-paste curl example
+        _print_curl_example(analysis, gw, agent_name_sanitized)
 
         # Auto-register: use --registry flag, or fall back to configured registry
         registry_url = registry or get_registry_url() or DEFAULT_REGISTRY_URL
@@ -1224,6 +1301,106 @@ def mcp_server_cmd(
         registry_url=registry,
         gateway_url=gateway,
     ))
+
+
+@app.command()
+def doctor():
+    """Check your AgentEazy setup and diagnose common issues."""
+    from agenteazy.config import (
+        get_api_key, get_registry_url, get_gateway_url,
+        DEFAULT_REGISTRY_URL, DEFAULT_GATEWAY_URL,
+    )
+
+    console.print("\n[bold]AgentEazy Doctor[/bold]\n")
+    all_ok = True
+
+    # 1. Python version
+    py_ver = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info >= (3, 9):
+        console.print(f"  [green]✓[/green] Python {py_ver}")
+    else:
+        console.print(f"  [red]✗[/red] Python {py_ver} — need 3.9+")
+        all_ok = False
+
+    # 2. Git available
+    if shutil.which("git"):
+        console.print(f"  [green]✓[/green] Git installed")
+    else:
+        console.print(f"  [red]✗[/red] Git not found — needed to clone repos")
+        all_ok = False
+
+    # 3. API key configured
+    api_key = get_api_key()
+    if api_key:
+        console.print(f"  [green]✓[/green] API key configured ({api_key[:10]}...)")
+    else:
+        console.print(f"  [yellow]![/yellow] No API key — run: agenteazy signup <username> --email <email>")
+        all_ok = False
+
+    # 4. Registry reachable
+    registry_url = get_registry_url() or DEFAULT_REGISTRY_URL
+    try:
+        resp = urllib.request.urlopen(f"{registry_url.rstrip('/')}/registry/stats", timeout=5)
+        data = json.loads(resp.read())
+        agent_count = data.get("total_agents", 0)
+        console.print(f"  [green]✓[/green] Registry reachable ({agent_count} agents)")
+    except Exception:
+        console.print(f"  [red]✗[/red] Registry unreachable at {registry_url}")
+        all_ok = False
+
+    # 5. Gateway reachable
+    gateway_url = get_gateway_url() or DEFAULT_GATEWAY_URL
+    try:
+        urllib.request.urlopen(f"{gateway_url.rstrip('/')}/health", timeout=5)
+        console.print(f"  [green]✓[/green] Gateway reachable")
+    except Exception:
+        console.print(f"  [red]✗[/red] Gateway unreachable at {gateway_url}")
+        all_ok = False
+
+    # 6. Modal installed + authenticated (optional)
+    modal_installed = shutil.which("modal") is not None
+    if modal_installed:
+        try:
+            result = subprocess.run(["modal", "profile", "current"], capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                console.print(f"  [green]✓[/green] Modal CLI installed and authenticated")
+            else:
+                console.print(f"  [yellow]![/yellow] Modal CLI installed but not authenticated — run: modal setup")
+                console.print(f"    [dim](Not required — you can use --self-host instead)[/dim]")
+        except Exception:
+            console.print(f"  [yellow]![/yellow] Modal CLI installed but auth check failed")
+    else:
+        console.print(f"  [dim]-[/dim] Modal CLI not installed (optional — use --self-host to deploy without Modal)")
+
+    # 7. Check for optional integrations
+    integrations = []
+    try:
+        import langchain_core  # noqa: F401
+        integrations.append("LangChain")
+    except ImportError:
+        pass
+    try:
+        import crewai  # noqa: F401
+        integrations.append("CrewAI")
+    except ImportError:
+        pass
+    try:
+        import mcp  # noqa: F401
+        integrations.append("MCP")
+    except ImportError:
+        pass
+
+    if integrations:
+        console.print(f"  [green]✓[/green] Integrations: {', '.join(integrations)}")
+    else:
+        console.print(f"  [dim]-[/dim] No optional integrations (pip install agenteazy[langchain|crewai|mcp])")
+
+    # Summary
+    console.print()
+    if all_ok:
+        console.print("  [bold green]All checks passed![/bold green] Ready to deploy.\n")
+    else:
+        console.print("  [bold yellow]Some issues found.[/bold yellow] Fix the items marked ✗ above.\n")
 
 
 if __name__ == "__main__":
