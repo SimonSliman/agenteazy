@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agenteazy"
-version = "0.2.4"
+version = "0.2.5"
 description = "Turn any GitHub repo into an AI agent in one command"
 readme = "README.md"
 license = {text = "MIT"}
