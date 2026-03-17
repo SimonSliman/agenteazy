@@ -63,6 +63,7 @@ import uvicorn
 
 MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
 FUNCTION_TIMEOUT_SECONDS = 25
+_DEBUG = os.environ.get("AGENTEAZY_DEBUG", "").lower() in ("1", "true", "yes")
 _executor = ThreadPoolExecutor(max_workers=4)
 
 # --- AgentLang protocol ---
@@ -263,14 +264,10 @@ async def do(request: Request, body: dict = None):
     except Exception as e:
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
-        return JSONResponse(
-            status_code=500,
-            content={{
-                "status": "failed",
-                "error": str(e),
-                "traceback": limited_tb,
-            }},
-        )
+        error_content = {{"status": "failed", "error": str(e)}}
+        if _DEBUG:
+            error_content["traceback"] = limited_tb
+        return JSONResponse(status_code=500, content=error_content)
 
 
 @app.post("/")
@@ -302,7 +299,10 @@ async def universal(request: Request, body: dict = None):
         _log_call(verb, "failed")
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
-        return JSONResponse(status_code=500, content={{"status": "failed", "error": str(e), "traceback": limited_tb}})
+        error_content = {{"status": "failed", "error": str(e)}}
+        if _DEBUG:
+            error_content["traceback"] = limited_tb
+        return JSONResponse(status_code=500, content=error_content)
 
 
 def _handle_verb(verb, payload):
