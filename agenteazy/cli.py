@@ -1187,5 +1187,44 @@ def transactions():
     console.print()
 
 
+@app.command(name="mcp-server")
+def mcp_server_cmd(
+    registry: str = typer.Option(None, "--registry", help="Registry URL"),
+    gateway: str = typer.Option(None, "--gateway", help="Gateway URL"),
+):
+    """Start an MCP server that exposes AgentEazy agents as tools.
+
+    Use this with Claude Desktop, Cursor, or any MCP-compatible client.
+
+    Claude Desktop config:
+        {
+            "mcpServers": {
+                "agenteazy": {
+                    "command": "agenteazy",
+                    "args": ["mcp-server"]
+                }
+            }
+        }
+    """
+    import asyncio
+
+    try:
+        from agenteazy.integrations.mcp_server import run_server
+    except ImportError:
+        console.print("[bold red]MCP SDK not installed.[/bold red]")
+        console.print("Install with: [cyan]pip install agenteazy[mcp][/cyan]")
+        raise typer.Exit(code=1)
+
+    # Don't print anything to stdout — MCP uses stdio for communication
+    # Log to stderr only
+    import logging
+    logging.basicConfig(level=logging.WARNING, stream=sys.stderr)
+
+    asyncio.run(run_server(
+        registry_url=registry,
+        gateway_url=gateway,
+    ))
+
+
 if __name__ == "__main__":
     app()
