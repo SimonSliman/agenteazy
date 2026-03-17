@@ -6,7 +6,7 @@ Your code becomes a live API that any AI agent can find, call, and pay — witho
 
 [![PyPI](https://img.shields.io/pypi/v/agenteazy)](https://pypi.org/project/agenteazy/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-82%20passing-brightgreen)]()
+[![Tests](https://img.shields.io/badge/tests-20%20passing-brightgreen)]()
 
 [Website](https://agenteazy.com) · [Dashboard](https://agenteazy.com/dashboard) · [Registry](https://agenteazy.com/agents) · [Docs](https://agenteazy.com/docs)
 
@@ -268,7 +268,7 @@ Gateway (serves all agents)  ←→  Registry (search + credits)
         /agents/zxcvbn-python/               Signup, balance,
         /agents/langdetect/                  deduct, earn, transfer
         /agents/dateparser/
-        ... (36 agents)
+        ... (18 agents)
 ```
 
 ---
@@ -281,7 +281,7 @@ Best first contribution: **OpenAI Function Calling integration**. Same pattern a
 git clone https://github.com/SimonSliman/agenteazy
 cd agenteazy
 pip install -e ".[dev]"
-pytest tests/ -q  # 82 tests
+pytest tests/ -q  # 20 tests
 ```
 
 ---
