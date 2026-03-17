@@ -66,6 +66,7 @@ def _get_registry_url():
 
 
 AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
+_DEBUG = os.environ.get("AGENTEAZY_DEBUG", "").lower() in ("1", "true", "yes")
 
 # Modal Volume handle – reload() before reading so newly uploaded agents are visible
 _volume = modal.Volume.from_name("agenteazy-agents-vol")
@@ -623,14 +624,10 @@ async def agent_do(agent_name: str, request: Request, body: dict = None):
     except Exception as e:
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "failed",
-                "error": str(e),
-                "traceback": limited_tb,
-            },
-        )
+        error_content = {"status": "failed", "error": str(e)}
+        if _DEBUG:
+            error_content["traceback"] = limited_tb
+        return JSONResponse(status_code=500, content=error_content)
 
 
 @app.post("/agent/{agent_name}/")
@@ -684,10 +681,10 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         _log_call(agent_name, verb_val.upper() if verb_val else "UNKNOWN", "failed")
         tb_lines = traceback.format_exception(type(e), e, e.__traceback__)
         limited_tb = "".join(tb_lines[-5:])
-        return JSONResponse(
-            status_code=500,
-            content={"status": "failed", "error": str(e), "traceback": limited_tb},
-        )
+        error_content = {"status": "failed", "error": str(e)}
+        if _DEBUG:
+            error_content["traceback"] = limited_tb
+        return JSONResponse(status_code=500, content=error_content)
 
 
 def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
