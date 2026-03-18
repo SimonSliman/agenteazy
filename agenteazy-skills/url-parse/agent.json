@@ -1,0 +1,5 @@
+{
+  "name": "url-parse",
+  "function": "parse",
+  "verbs": ["DO", "ASK"]
+}
