@@ -1,0 +1,5 @@
+{
+  "name": "csv-to-json",
+  "function": "convert",
+  "verbs": ["DO", "ASK"]
+}
