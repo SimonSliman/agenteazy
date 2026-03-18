@@ -1,0 +1,6 @@
+{
+  "name": "hash-text",
+  "entry": "generate",
+  "function": "hash",
+  "verbs": ["DO", "ASK"]
+}
