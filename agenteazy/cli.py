@@ -430,6 +430,7 @@ def deploy(
     legacy: bool = typer.Option(False, "--legacy", help="Use legacy per-agent Modal app instead of gateway"),
     price: Optional[int] = typer.Option(None, "--price", help="Credits per call (adds pricing to agent.json)"),
     entry: Optional[str] = typer.Option(None, "--entry", help="Override entry point: 'file.py:func' or 'file.py:Class.method'"),
+    name: Optional[str] = typer.Option(None, "--name", help="Override agent name (default: repo name)"),
 ):
     """Analyze, wrap, and deploy an agent. Uploads to gateway volume by default."""
     from agenteazy.config import get_gateway_url, get_registry_url, DEFAULT_REGISTRY_URL, DEFAULT_GATEWAY_URL
@@ -472,8 +473,11 @@ def deploy(
         )
         raise typer.Exit(code=1)
 
+    # Resolve agent name: --name flag overrides repo_name
+    agent_name = name if name else analysis.repo_name
+
     # Step 2: Generate agent.json + wrapper
-    output_dir = os.path.join(".", "agenteazy-output", analysis.repo_name)
+    output_dir = os.path.join(".", "agenteazy-output", agent_name)
     os.makedirs(output_dir, exist_ok=True)
 
     console.print("[dim]Step 2/4: Generating agent.json and wrapper...[/dim]")
@@ -538,7 +542,7 @@ def deploy(
             console.print(f"")
 
             # Print curl example for self-host
-            _print_curl_example(analysis, "https://your-public-url.com", sanitize_agent_name(analysis.repo_name), prefix="  4. ")
+            _print_curl_example(analysis, "https://your-public-url.com", sanitize_agent_name(agent_name), prefix="  4. ")
 
             registry_url_display = registry_url or "https://your-registry-url"
             console.print(f"  Or register manually:")
@@ -572,7 +576,7 @@ def deploy(
         # Legacy: one Modal app per agent
         console.print("[dim]Step 3/4: Deploying to Modal (legacy per-agent app)...[/dim]")
         try:
-            url = deploy_to_modal(output_dir, analysis.repo_name)
+            url = deploy_to_modal(output_dir, agent_name)
         except Exception as e:
             _handle_error(e, "Modal deploy")
             raise typer.Exit(code=1)
@@ -581,7 +585,7 @@ def deploy(
             name=agent_config["name"],
             version=agent_config["version"],
             url=url,
-            modal_app_name=analysis.repo_name,
+            modal_app_name=agent_name,
         )
 
         console.print()
@@ -608,7 +612,7 @@ def deploy(
 
         console.print("[dim]Step 3/4: Uploading to gateway volume...[/dim]")
         try:
-            url = upload_to_volume(output_dir, analysis.repo_name, gateway_url)
+            url = upload_to_volume(output_dir, agent_name, gateway_url)
         except Exception as e:
             error_msg = str(e).lower()
             if "auth" in error_msg or "modal" in error_msg or "credential" in error_msg or "token" in error_msg:
@@ -624,7 +628,7 @@ def deploy(
                 _handle_error(e, "volume upload")
                 raise typer.Exit(code=1)
 
-        agent_name_sanitized = sanitize_agent_name(analysis.repo_name)
+        agent_name_sanitized = sanitize_agent_name(agent_name)
         gw = gateway_url.rstrip("/")
 
         record_deploy(
