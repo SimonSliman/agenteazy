@@ -116,7 +116,6 @@ AGENT_CONFIG = json.loads({config_json_repr})
 # --- Load the wrapped module ---
 REPO_PATH = os.environ.get("AGENTEAZY_REPO_PATH", os.path.join(os.path.dirname(__file__), "repo"))
 PYTHON_ROOT = os.path.join(REPO_PATH, "{python_root}")
-sys.path.insert(0, PYTHON_ROOT)
 
 ENTRY_MODULE = "{entry_module}"
 ENTRY_FUNCTION = "{entry_function}"
@@ -127,6 +126,16 @@ _module = None
 def _load_module():
     global _module
     if _module is None:
+        # Try importing without modifying sys.path first (pip-installed packages)
+        try:
+            _module = importlib.import_module(ENTRY_MODULE)
+            return _module
+        except ImportError:
+            pass
+
+        # Fall back to adding PYTHON_ROOT to sys.path
+        if PYTHON_ROOT not in sys.path:
+            sys.path.insert(0, PYTHON_ROOT)
         try:
             _module = importlib.import_module(ENTRY_MODULE)
         except ImportError:
