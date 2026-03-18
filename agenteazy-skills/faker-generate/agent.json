@@ -1,0 +1,5 @@
+{
+  "name": "faker-generate",
+  "entry": "generate",
+  "verbs": ["DO", "ASK"]
+}
