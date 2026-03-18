@@ -1,0 +1,5 @@
+{
+  "name": "password-generate",
+  "function": "generate",
+  "verbs": ["DO", "ASK"]
+}
