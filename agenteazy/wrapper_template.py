@@ -79,29 +79,34 @@ def _log_call(verb, status):
 def _dispatch(func, payload):
     """Dynamically map payload keys to function parameters."""
     sig = inspect.signature(func)
+    positional_args = []
     kwargs = {{}}
-    extra = dict(payload)  # copy so we can pop consumed keys
+    extra = dict(payload)
 
     for name, param in sig.parameters.items():
         if param.kind == inspect.Parameter.VAR_KEYWORD:
-            # **kwargs — will receive all remaining payload
             continue
         if param.kind == inspect.Parameter.VAR_POSITIONAL:
-            # *args — skip, we use keyword dispatch
+            continue
+        if param.kind == inspect.Parameter.POSITIONAL_ONLY:
+            if name in extra:
+                positional_args.append(extra.pop(name))
+            elif param.default is not inspect.Parameter.empty:
+                positional_args.append(param.default)
+            else:
+                positional_args.append(None)
             continue
         if name in extra:
             kwargs[name] = extra.pop(name)
         elif param.default is inspect.Parameter.empty:
-            # Required param not in payload — include as None with warning
             kwargs[name] = None
 
-    # If function accepts **kwargs, pass remaining payload
     for name, param in sig.parameters.items():
         if param.kind == inspect.Parameter.VAR_KEYWORD:
             kwargs.update(extra)
             break
 
-    return func(**kwargs)
+    return func(*positional_args, **kwargs)
 
 
 # --- Agent config ---
