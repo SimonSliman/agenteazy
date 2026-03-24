@@ -525,6 +525,7 @@ def deploy(
             if not registry_url:
                 from agenteazy.config import DEFAULT_REGISTRY_URL
                 registry_url = DEFAULT_REGISTRY_URL
+            agent_config["name"] = agent_name
             _register_with_registry(registry_url, agent_config, host_url.rstrip("/"), analysis)
             console.print(f"[bold green]Registered![/bold green] Your agent is live at: {host_url}")
         else:
@@ -604,6 +605,7 @@ def deploy(
 
         if registry:
             console.print(f"\n[dim]Registering with registry at {registry}...[/dim]")
+            agent_config["name"] = agent_name
             _register_with_registry(registry, agent_config, url, analysis)
     else:
         # Gateway mode: upload to shared volume
@@ -658,6 +660,7 @@ def deploy(
         registry_url = registry or get_registry_url() or DEFAULT_REGISTRY_URL
         if registry_url:
             console.print(f"\n[dim]Registering with registry at {registry_url}...[/dim]")
+            agent_config["name"] = agent_name
             _register_with_registry(registry_url, agent_config, f"{gw}/agent/{agent_name_sanitized}", analysis)
         else:
             console.print("\n[dim]No registry URL configured — skipping registration.[/dim]")
