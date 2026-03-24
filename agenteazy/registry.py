@@ -557,6 +557,11 @@ class AdminCreditRequest(BaseModel):
 
 # ── Admin Endpoints ─────────────────────────────────────────────────
 
+@app.get("/admin/ping")
+def admin_ping():
+    return {"ok": True}
+
+
 @app.get("/admin/accounts")
 def admin_list_accounts(request: Request, limit: int = Query(100, ge=1), offset: int = Query(0, ge=0)):
     _require_admin(request)
