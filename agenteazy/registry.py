@@ -254,6 +254,18 @@ def delete_agent(name: str, request: Request):
         return {"deleted": True}
 
 
+@app.delete("/admin/agent/{name}")
+def admin_delete_agent(name: str, request: Request):
+    _require_admin(request)
+    with _db() as db:
+        row = db.execute("SELECT name FROM agents WHERE name = ?", (name,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
+        db.execute("DELETE FROM agents WHERE name = ?", (name,))
+        db.commit()
+        return {"deleted": True, "name": name}
+
+
 @app.get("/registry/stats")
 def stats():
     with _db() as db:
@@ -688,18 +700,6 @@ def admin_seed_platform(request: Request):
         db.commit()
 
         return {"status": "seeded", "message": "ae_platform account created with 0 credits"}
-
-
-@app.delete("/admin/agent/{name}")
-def admin_delete_agent(name: str, request: Request):
-    _require_admin(request)
-    with _db() as db:
-        row = db.execute("SELECT name FROM agents WHERE name = ?", (name,)).fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"Agent '{name}' not found")
-        db.execute("DELETE FROM agents WHERE name = ?", (name,))
-        db.commit()
-        return {"deleted": True, "name": name}
 
 
 if __name__ == "__main__":
