@@ -92,7 +92,7 @@ image = (
     .pip_install([
         "fastapi>=0.100.0", "uvicorn>=0.23.0",
         # Current skill deps
-        "phonenumbers", "faker", "dnspython",
+        "phonenumbers", "faker", "dnspython", "disposable-email-domains",
         # Batch 2 — text analysis
         "textstat", "textblob", "yake", "better-profanity",
         # Batch 3 — data conversion
