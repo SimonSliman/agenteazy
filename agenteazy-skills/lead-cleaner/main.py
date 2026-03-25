@@ -6,13 +6,16 @@ EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
 def _safe_call(skill, data):
     try:
-        return call_skill(skill, data)
+        result = call_skill(skill, data)
+        if not isinstance(result, dict):
+            return {"raw": str(result)}
+        return result
     except Exception as e:
         return {"error": str(e)}
 
 
 def clean(leads):
-    """Clean a list of leads. Each lead = {"email": ..., "phone": ..., "notes": ...}"""
+    """Clean a list of leads."""
     try:
         if isinstance(leads, dict) and "rows" in leads:
             leads = leads["rows"]
@@ -43,12 +46,6 @@ def clean(leads):
             results.append(row)
 
         clean_count = sum(1 for r in results if r["clean"])
-        return {
-            "total": len(results),
-            "clean": clean_count,
-            "flagged": len(results) - clean_count,
-            "results": results,
-        }
+        return {"total": len(results), "clean": clean_count, "flagged": len(results) - clean_count, "results": results}
     except Exception as e:
         return {"error": str(e)}
-# bust 1774419171
