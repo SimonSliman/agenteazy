@@ -1,8 +1,11 @@
+import re
 from agenteazy_runtime import call_skill
+
+EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
 
 def clean(leads):
-    """Clean a list of leads. Each lead = {"email": ..., "phone": ..., "name": ...}"""
+    """Clean a list of leads. Each lead = {"email": ..., "phone": ..., "notes": ...}"""
     try:
         if isinstance(leads, dict) and "rows" in leads:
             leads = leads["rows"]
@@ -13,10 +16,10 @@ def clean(leads):
         for lead in leads:
             row = {"original": lead}
 
-            # 1. Validate email
+            # 1. Validate email (inline regex — no external dep)
             email = lead.get("email", "")
             if email:
-                row["email_valid"] = call_skill("python-email-validator", {"email": email})
+                row["email_valid"] = bool(EMAIL_RE.match(email.strip()))
 
             # 2. Check disposable
             if email:
@@ -27,14 +30,14 @@ def clean(leads):
             if phone:
                 row["phone_parsed"] = call_skill("python-phonenumbers", {"phone": phone})
 
-            # 4. Scrub PII from name/notes
+            # 4. Scrub PII from notes
             text = lead.get("notes", "") or lead.get("name", "")
             if text:
                 row["pii_scrubbed"] = call_skill("pii-scrub", {"text": text})
 
-            # Score: simple pass/fail
-            email_ok = row.get("email_valid", {}).get("valid", False) if email else True
-            not_disposable = not row.get("email_disposable", {}).get("is_disposable", False) if email else True
+            # Score
+            email_ok = row.get("email_valid", True)
+            not_disposable = not row.get("email_disposable", {}).get("is_disposable", False)
             row["clean"] = email_ok and not_disposable
 
             results.append(row)
