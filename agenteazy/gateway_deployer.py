@@ -89,7 +89,21 @@ volume = modal.Volume.from_name("{VOLUME_NAME}", create_if_missing=True)
 
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .pip_install(["fastapi>=0.100.0", "uvicorn>=0.23.0"])
+    .pip_install([
+        "fastapi>=0.100.0", "uvicorn>=0.23.0",
+        # Current skill deps
+        "phonenumbers", "faker", "dnspython",
+        # Batch 2 — text analysis
+        "textstat", "textblob", "yake", "better-profanity",
+        # Batch 3 — data conversion
+        "pyyaml", "toml", "beautifulsoup4", "croniter",
+        # Batch 4 — security
+        "scrubadub", "bcrypt", "pyjwt",
+        # Batch 5 — web utilities
+        "ua-parser", "tldextract", "pytz",
+        # Batch 6 — remaining
+        "babel", "pint",
+    ])
     .add_local_file({gateway_src_repr}, remote_path="/app/gateway.py", copy=True)
     .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "{DEFAULT_REGISTRY_URL}"}})
     .workdir("/app")
