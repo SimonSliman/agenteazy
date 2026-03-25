@@ -1,0 +1,8 @@
+{
+  "name": "unit-convert",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

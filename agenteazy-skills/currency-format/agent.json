@@ -1,0 +1,8 @@
+{
+  "name": "currency-format",
+  "entry": "format",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "useragent-parse",
+  "entry": "parse",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

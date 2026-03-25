@@ -1,0 +1,8 @@
+{
+  "name": "timezone-convert",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

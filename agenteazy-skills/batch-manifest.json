@@ -1,0 +1,72 @@
+[
+  {
+    "name": "useragent-parse",
+    "library": "ua_parser",
+    "import": "from ua_parser import user_agent_parser",
+    "function": "parse",
+    "args": "ua_string",
+    "body": "result = user_agent_parser.Parse(ua_string)\n        return {\"browser\": result.get(\"user_agent\", {}), \"os\": result.get(\"os\", {}), \"device\": result.get(\"device\", {})}",
+    "requirements": "ua-parser",
+    "price": 1
+  },
+  {
+    "name": "fake-profile",
+    "library": "faker",
+    "import": "from faker import Faker",
+    "function": "profile",
+    "args": "locale=\"en_US\"",
+    "body": "fake = Faker(locale)\n        p = fake.profile()\n        p[\"birthdate\"] = str(p.get(\"birthdate\", \"\"))\n        return p",
+    "requirements": "faker",
+    "price": 3
+  },
+  {
+    "name": "timezone-convert",
+    "library": "pytz",
+    "import": "from datetime import datetime\nimport pytz",
+    "function": "convert",
+    "args": "dt_str, from_tz, to_tz",
+    "body": "src = pytz.timezone(from_tz)\n        dst = pytz.timezone(to_tz)\n        dt = datetime.fromisoformat(dt_str)\n        if dt.tzinfo is None:\n            dt = src.localize(dt)\n        converted = dt.astimezone(dst)\n        return {\"original\": dt_str, \"from\": from_tz, \"to\": to_tz, \"converted\": converted.isoformat()}",
+    "requirements": "pytz",
+    "price": 1
+  },
+  {
+    "name": "text-summarize",
+    "library": "sumy",
+    "import": "from sumy.parsers.plaintext import PlaintextParser\nfrom sumy.nlp.tokenizers import Tokenizer\nfrom sumy.summarizers.lsa import LsaSummarizer",
+    "function": "summarize",
+    "args": "text, sentences=3",
+    "body": "parser = PlaintextParser.from_string(text, Tokenizer(\"english\"))\n        summarizer = LsaSummarizer()\n        summary = summarizer(parser.document, int(sentences))\n        result = \" \".join(str(s) for s in summary)\n        return {\"summary\": result, \"sentence_count\": len(list(summary)), \"original_length\": len(text)}",
+    "requirements": "sumy\nnltk",
+    "price": 3
+  },
+  {
+    "name": "currency-format",
+    "library": "babel",
+    "import": "from babel.numbers import format_currency",
+    "function": "format",
+    "args": "amount, currency=\"USD\", locale=\"en_US\"",
+    "body": "formatted = format_currency(float(amount), currency, locale=locale)\n        return {\"formatted\": formatted, \"amount\": float(amount), \"currency\": currency, \"locale\": locale}",
+    "requirements": "babel",
+    "price": 1
+  },
+  {
+    "name": "unit-convert",
+    "library": "pint",
+    "import": "import pint\nureg = pint.UnitRegistry()",
+    "function": "convert",
+    "args": "value, from_unit, to_unit",
+    "body": "quantity = float(value) * ureg(from_unit)\n        result = quantity.to(to_unit)\n        return {\"value\": result.magnitude, \"unit\": str(result.units), \"original\": {\"value\": float(value), \"unit\": from_unit}}",
+    "requirements": "pint",
+    "price": 1
+  },
+  {
+    "name": "ip-info",
+    "library": "ipaddress",
+    "import": "import ipaddress",
+    "function": "info",
+    "args": "ip",
+    "body": "addr = ipaddress.ip_address(ip)\n        return {\"ip\": str(addr), \"version\": addr.version, \"is_private\": addr.is_private, \"is_global\": addr.is_global, \"is_loopback\": addr.is_loopback, \"is_multicast\": addr.is_multicast}",
+    "requirements": "",
+    "price": 0
+  }
+]

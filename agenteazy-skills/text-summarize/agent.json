@@ -1,0 +1,8 @@
+{
+  "name": "text-summarize",
+  "entry": "summarize",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

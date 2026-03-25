@@ -1,0 +1,8 @@
+{
+  "name": "fake-profile",
+  "entry": "profile",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}
