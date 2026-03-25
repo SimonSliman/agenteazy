@@ -102,7 +102,7 @@ image = (
         # Batch 5 — web utilities
         "ua-parser", "tldextract", "pytz",
         # Batch 6 — remaining
-        "babel", "pint",
+        "babel", "pint", "sumy", "nltk",
     ])
     .add_local_file({gateway_src_repr}, remote_path="/app/gateway.py", copy=True)
     .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "{DEFAULT_REGISTRY_URL}"}})
