@@ -1,0 +1,8 @@
+{
+  "name": "url-extract",
+  "entry": "extract",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

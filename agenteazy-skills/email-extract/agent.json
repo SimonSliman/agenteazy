@@ -1,0 +1,8 @@
+{
+  "name": "email-extract",
+  "entry": "extract",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "markdown-render",
+  "entry": "render",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

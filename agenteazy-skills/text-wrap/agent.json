@@ -1,0 +1,8 @@
+{
+  "name": "text-wrap",
+  "entry": "wrap",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

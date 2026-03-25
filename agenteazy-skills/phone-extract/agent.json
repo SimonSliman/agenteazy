@@ -1,0 +1,8 @@
+{
+  "name": "phone-extract",
+  "entry": "extract",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

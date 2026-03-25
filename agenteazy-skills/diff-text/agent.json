@@ -1,0 +1,8 @@
+{
+  "name": "diff-text",
+  "entry": "diff",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

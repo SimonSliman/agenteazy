@@ -1,0 +1,8 @@
+{
+  "name": "list-dedupe",
+  "entry": "dedupe",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "crontab-describe",
+  "entry": "describe",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

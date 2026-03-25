@@ -1,0 +1,8 @@
+{
+  "name": "json-flatten",
+  "entry": "flatten",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "csv-stats",
+  "entry": "analyze",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

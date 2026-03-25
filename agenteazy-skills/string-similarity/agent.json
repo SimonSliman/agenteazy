@@ -1,0 +1,8 @@
+{
+  "name": "string-similarity",
+  "entry": "ratio",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

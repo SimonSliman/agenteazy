@@ -1,0 +1,8 @@
+{
+  "name": "math-eval",
+  "entry": "evaluate",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

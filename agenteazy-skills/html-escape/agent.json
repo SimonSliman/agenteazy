@@ -1,0 +1,8 @@
+{
+  "name": "html-escape",
+  "entry": "escape",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

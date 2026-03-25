@@ -1,0 +1,8 @@
+{
+  "name": "text-truncate",
+  "entry": "truncate",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

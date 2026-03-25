@@ -1,0 +1,8 @@
+{
+  "name": "language-detect-multi",
+  "entry": "detect_all",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

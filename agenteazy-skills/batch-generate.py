@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Generate all skill folders from batch-manifest.json and deploy them."""
+"""Generate all skill folders from mega-manifest.json and deploy them."""
 import json
 import os
 import subprocess
 import sys
 
-MANIFEST = os.path.join(os.path.dirname(__file__), "batch-manifest.json")
+MANIFEST = os.path.join(os.path.dirname(__file__), "mega-manifest.json")
 SKILLS_DIR = os.path.dirname(__file__)
 
 with open(MANIFEST) as f:

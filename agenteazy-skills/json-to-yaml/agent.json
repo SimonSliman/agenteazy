@@ -1,0 +1,8 @@
+{
+  "name": "json-to-yaml",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

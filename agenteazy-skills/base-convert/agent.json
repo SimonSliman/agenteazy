@@ -1,0 +1,8 @@
+{
+  "name": "base-convert",
+  "entry": "encode",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

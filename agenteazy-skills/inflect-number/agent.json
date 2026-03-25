@@ -1,0 +1,8 @@
+{
+  "name": "inflect-number",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

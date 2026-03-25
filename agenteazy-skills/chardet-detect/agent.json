@@ -1,0 +1,8 @@
+{
+  "name": "chardet-detect",
+  "entry": "detect",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "text-encode",
+  "entry": "hash_all",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

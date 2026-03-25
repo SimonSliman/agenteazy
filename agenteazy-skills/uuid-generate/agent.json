@@ -1,0 +1,8 @@
+{
+  "name": "uuid-generate",
+  "entry": "generate",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "xml-to-json",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

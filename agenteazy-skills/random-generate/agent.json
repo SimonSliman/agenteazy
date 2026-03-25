@@ -1,0 +1,8 @@
+{
+  "name": "random-generate",
+  "entry": "generate",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "url-encode",
+  "entry": "encode",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

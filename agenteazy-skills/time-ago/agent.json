@@ -1,0 +1,8 @@
+{
+  "name": "time-ago",
+  "entry": "format",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

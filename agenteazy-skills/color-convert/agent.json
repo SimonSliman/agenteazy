@@ -1,0 +1,8 @@
+{
+  "name": "color-convert",
+  "entry": "convert",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

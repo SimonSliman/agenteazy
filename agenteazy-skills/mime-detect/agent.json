@@ -1,0 +1,8 @@
+{
+  "name": "mime-detect",
+  "entry": "detect",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

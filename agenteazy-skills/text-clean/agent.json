@@ -1,0 +1,8 @@
+{
+  "name": "text-clean",
+  "entry": "clean",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

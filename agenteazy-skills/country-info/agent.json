@@ -1,0 +1,8 @@
+{
+  "name": "country-info",
+  "entry": "lookup",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

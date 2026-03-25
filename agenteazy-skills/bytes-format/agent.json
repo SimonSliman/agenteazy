@@ -1,0 +1,8 @@
+{
+  "name": "bytes-format",
+  "entry": "format",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}

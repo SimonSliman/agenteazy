@@ -1,0 +1,8 @@
+{
+  "name": "json-validate",
+  "entry": "validate",
+  "verbs": [
+    "DO",
+    "ASK"
+  ]
+}
