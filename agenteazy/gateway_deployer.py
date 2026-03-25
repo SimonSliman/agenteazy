@@ -106,8 +106,7 @@ image = (
     ])
     .add_local_file({gateway_src_repr}, remote_path="/app/gateway.py", copy=True)
     .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "{DEFAULT_REGISTRY_URL}"}})
-    .run_commands("python -c "import nltk; nltk.download('punkt_tab'); nltk.download('punkt')"")
-    .run_commands("python -c \"import nltk; nltk.download('punkt_tab'); nltk.download('punkt')\"")
+    .run_commands("python -m nltk.downloader punkt_tab punkt")
     .workdir("/app")
 )
 
