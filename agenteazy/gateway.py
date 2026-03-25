@@ -861,3 +861,25 @@ if __name__ == "__main__":
 # deployed 20260315T221804Z
 # gateway-wrapper-fix 20260316T204036Z
 # final-fixes 20260317T191520Z
+
+
+# ── Agent-calls-agent (internal skill dispatch) ─────────────────────────
+
+def gateway_call(skill_name: str, data: dict) -> dict:
+    """Call another skill in-process. No billing. For Layer 2 agents."""
+    _install_agent_deps(skill_name)
+    wrapper_mod = _load_agent_wrapper(skill_name)
+    if wrapper_mod and hasattr(wrapper_mod, '_get_entry_func') and hasattr(wrapper_mod, '_dispatch'):
+        func = wrapper_mod._get_entry_func()
+        return wrapper_mod._dispatch(func, data)
+    else:
+        func, _config = _load_agent_func(skill_name)
+        return _dispatch_call(func, data)
+
+
+# Expose call_skill to agent code as an importable module
+import types as _types
+_runtime_mod = _types.ModuleType("agenteazy_runtime")
+_runtime_mod.call_skill = gateway_call
+_runtime_mod.__doc__ = "AgentEazy runtime helpers — available to all skills running on the gateway."
+sys.modules["agenteazy_runtime"] = _runtime_mod
