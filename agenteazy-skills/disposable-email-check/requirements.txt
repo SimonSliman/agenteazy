@@ -1,3 +1,2 @@
-disposable-email-domains
 fastapi
 uvicorn
