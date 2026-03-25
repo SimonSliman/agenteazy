@@ -86,6 +86,20 @@ _executor = ThreadPoolExecutor(max_workers=8)
 # Cache loaded agent modules and configs to avoid re-loading on every request
 _agent_configs: dict[str, dict] = {}
 _agent_modules: dict[str, object] = {}
+_agent_mtimes: dict[str, float] = {}  # agent_name -> mtime of agent.json when cached
+
+
+def _check_stale(agent_name: str) -> None:
+    """If agent files changed on disk, invalidate caches so next load picks up new code."""
+    config_path = os.path.join(AGENTS_ROOT, agent_name, "agent.json")
+    try:
+        current_mtime = os.path.getmtime(config_path)
+    except OSError:
+        return
+    cached_mtime = _agent_mtimes.get(agent_name)
+    if cached_mtime is not None and current_mtime != cached_mtime:
+        _invalidate_cache(agent_name)
+        _installed_deps.discard(agent_name)
 
 # Call logger — last 50 calls per agent
 _call_log: dict[str, deque] = {}
@@ -141,6 +155,7 @@ def _load_agent_config(agent_name: str) -> dict:
         config = json.load(f)
 
     _agent_configs[agent_name] = config
+    _agent_mtimes[agent_name] = os.path.getmtime(config_path)
     return config
 
 
@@ -636,6 +651,7 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
     _validate_agent_name(agent_name)
     try:
         await _refresh_volume()
+        _check_stale(agent_name)
         content_length = request.headers.get("content-length")
         if content_length:
             try:
