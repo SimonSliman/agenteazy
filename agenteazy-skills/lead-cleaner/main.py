@@ -30,7 +30,7 @@ def clean(leads):
 
             phone = lead.get("phone", "")
             if phone:
-                row["phone_parsed"] = _safe_call("python-phonenumbers", {"phone": phone})
+                row["phone_parsed"] = _safe_call("python-phonenumbers", {"number": phone})
 
             text = lead.get("notes", "") or lead.get("name", "")
             if text:

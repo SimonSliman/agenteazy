@@ -60,7 +60,7 @@ def qualify(leads):
             # Phone present?
             phone = lead.get("phone", "")
             if phone:
-                parsed = _safe_call("python-phonenumbers", {"phone": phone})
+                parsed = _safe_call("python-phonenumbers", {"number": phone})
                 row["phone_parsed"] = parsed
                 if parsed.get("error"):
                     flags.append("invalid_phone")
