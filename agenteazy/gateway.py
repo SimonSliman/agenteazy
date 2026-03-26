@@ -80,7 +80,7 @@ async def _refresh_volume() -> None:
         pass  # best-effort; avoid crashing requests if reload fails
 
 FUNCTION_TIMEOUT_SECONDS = 25
-MAX_REQUEST_BODY_BYTES = 1_048_576  # 1 MB
+MAX_REQUEST_BODY_BYTES = 10_485_760  # 10 MB
 _executor = ThreadPoolExecutor(max_workers=8)
 
 # Cache loaded agent modules and configs to avoid re-loading on every request
