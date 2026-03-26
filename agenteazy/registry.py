@@ -229,7 +229,7 @@ def agents_by_owner(api_key: str):
 
 
 @app.get("/registry/all")
-def list_agents(limit: int = Query(50, ge=1), offset: int = Query(0, ge=0)):
+def list_agents(limit: int = Query(500, ge=1), offset: int = Query(0, ge=0)):
     with _db() as db:
         rows = db.execute(
             "SELECT * FROM agents ORDER BY created_at DESC LIMIT ? OFFSET ?",
@@ -445,7 +445,7 @@ def tollbooth_earn(req: EarnRequest):
 
 
 @app.get("/tollbooth/transactions/{api_key}")
-def tollbooth_transactions(api_key: str, limit: int = Query(50, ge=1)):
+def tollbooth_transactions(api_key: str, limit: int = Query(500, ge=1)):
     with _db() as db:
         row = db.execute("SELECT api_key FROM balances WHERE api_key = ?", (api_key,)).fetchone()
         if not row:
