@@ -377,9 +377,9 @@ def _check_tollbooth(agent_name: str, auth_token: str | None) -> dict:
             config = json.load(f)
 
         pricing = config.get("pricing")
-        credits_per_call = pricing.get("credits_per_call", 0) if isinstance(pricing, dict) else 0
-        if not pricing or credits_per_call <= 0:
-            return {"ok": True, "free": True}
+        credits_per_call = pricing.get("credits_per_call", 1) if isinstance(pricing, dict) else 1
+        if credits_per_call <= 0:
+            credits_per_call = 1
 
         if not auth_token:
             return {
