@@ -67,6 +67,8 @@ def _get_registry_url():
 
 AGENTS_ROOT = os.environ.get("AGENTEAZY_AGENTS_ROOT", "/agents")
 _DEBUG = os.environ.get("AGENTEAZY_DEBUG", "").lower() in ("1", "true", "yes")
+HUMANAGENT_API_KEY = os.environ.get("HUMANAGENT_API_KEY", "")
+CREDITS_TO_USD_RATE = float(os.environ.get("CREDITS_TO_USD_RATE", "0.001"))
 
 # Modal Volume handle – reload() before reading so newly uploaded agents are visible
 _volume = modal.Volume.from_name("agenteazy-agents-vol")
@@ -107,6 +109,7 @@ MAX_CALL_LOG = 50
 
 # Per-agent shared context store
 _agent_context: dict[str, dict] = {}
+_trust_checkpoints: dict[str, dict] = {}
 
 
 def _log_call(agent_name: str, verb: str, status: str) -> None:
@@ -359,6 +362,145 @@ def _dispatch_call(func, data: dict):
     if positional_args:
         return func(*positional_args, **kwargs)
     return func(**kwargs)
+
+
+# ── TRUST verb helpers ────────────────────────────────────────────────
+
+_trust_logger = logging.getLogger("agenteazy.trust")
+
+
+def _credits_to_usd(credits: int) -> float:
+    """Convert credits to USD using the configured rate."""
+    return round(credits * CREDITS_TO_USD_RATE, 4)
+
+
+def _resolve_human_agent(target_name: str | None) -> tuple[str | None, str | None]:
+    """Look up a human agent from registry. Returns (name, url) or (None, None)."""
+    registry_url = _get_registry_url()
+    if not registry_url:
+        return (None, None)
+    base = registry_url.rstrip("/")
+
+    try:
+        if target_name is None:
+            url = f"{base}/registry/all?agent_type=human&limit=1"
+            req = urllib.request.Request(url)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode())
+            if not data:
+                return (None, None)
+            agent = data[0] if isinstance(data, list) else data
+            name = agent.get("name")
+            agent_url = agent.get("url")
+        else:
+            url = f"{base}/registry/agent/{urllib.parse.quote(target_name)}"
+            req = urllib.request.Request(url)
+            resp = urllib.request.urlopen(req, timeout=10)
+            agent = json.loads(resp.read().decode())
+            name = agent.get("name")
+            agent_url = agent.get("url")
+
+        if name and agent_url:
+            _agent_configs[f"_human_url_{name}"] = {"url": agent_url}
+        return (name, agent_url)
+    except Exception as e:
+        _trust_logger.error("Failed to resolve human agent: %s", e)
+        return (None, None)
+
+
+def _dispatch_to_human(target_url: str, checkpoint_body: dict) -> dict:
+    """POST checkpoint to a human agent endpoint."""
+    try:
+        url = f"{target_url.rstrip('/')}/api/v1/checkpoint"
+        payload = json.dumps(checkpoint_body).encode()
+        headers = {"Content-Type": "application/json"}
+        if HUMANAGENT_API_KEY:
+            headers["Authorization"] = f"Bearer {HUMANAGENT_API_KEY}"
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        resp = urllib.request.urlopen(req, timeout=15)
+        return json.loads(resp.read().decode())
+    except Exception as e:
+        _trust_logger.error("Dispatch to human failed: %s", e)
+        return {"error": str(e)}
+
+
+def _poll_human_checkpoint(target_url: str, checkpoint_id: str) -> dict:
+    """GET checkpoint status from a human agent endpoint."""
+    try:
+        url = f"{target_url.rstrip('/')}/api/v1/checkpoint/{urllib.parse.quote(checkpoint_id)}"
+        headers = {}
+        if HUMANAGENT_API_KEY:
+            headers["Authorization"] = f"Bearer {HUMANAGENT_API_KEY}"
+        req = urllib.request.Request(url, headers=headers)
+        resp = urllib.request.urlopen(req, timeout=10)
+        return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"status": "not_found", "error": "Checkpoint not found"}
+        if e.code == 410:
+            return {"status": "expired", "error": "Checkpoint expired"}
+        return {"error": str(e)}
+    except Exception as e:
+        _trust_logger.error("Poll human checkpoint failed: %s", e)
+        return {"error": str(e)}
+
+
+def _deduct_for_trust(auth_token: str, agent_name: str, credits: int) -> dict:
+    """Deduct credits for a TRUST operation."""
+    registry_url = _get_registry_url()
+    if not registry_url:
+        return {"ok": False, "error": "No registry URL configured"}
+    base = registry_url.rstrip("/")
+
+    try:
+        payload = json.dumps({
+            "api_key": auth_token,
+            "agent_name": f"trust:{agent_name}",
+            "amount": credits,
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/tollbooth/deduct", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+        if data.get("success"):
+            return {"ok": True, "remaining": data.get("remaining", 0)}
+        return {"ok": False, "error": data.get("error", "Deduction failed")}
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode())
+            return {"ok": False, "error": body.get("error", str(e))}
+        except Exception:
+            return {"ok": False, "error": str(e)}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+def _refund_trust_credits(auth_token: str, credits: int, reason: str) -> bool:
+    """Refund credits for a failed or expired TRUST operation."""
+    registry_url = _get_registry_url()
+    if not registry_url:
+        _trust_logger.error("Cannot refund: no registry URL")
+        return False
+    base = registry_url.rstrip("/")
+
+    try:
+        payload = json.dumps({
+            "api_key": auth_token,
+            "amount": credits,
+            "source": f"trust_refund:{reason}",
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/tollbooth/earn", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        resp = urllib.request.urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode())
+        return data.get("success", False)
+    except Exception as e:
+        _trust_logger.error("Trust credit refund failed: %s", e)
+        return False
 
 
 # ── TollBooth helpers ──────────────────────────────────────────────────
@@ -674,7 +816,7 @@ async def agent_universal(agent_name: str, request: Request, body: dict = None):
         auth = body.get("auth") or request.headers.get("x-api-key")
 
         # PAY is a free verb — skip billing, credits are transferred explicitly
-        if verb == "PAY":
+        if verb in ("PAY", "TRUST"):
             result = _handle_verb(agent_name, verb, payload, auth=auth)
         else:
             toll = _check_tollbooth(agent_name, auth)
@@ -865,10 +1007,111 @@ def _handle_verb(agent_name: str, verb: str, payload: dict, **extra):
             return {"status": "error", "message": str(e)}
 
     if verb == "TRUST":
-        return {"status": "acknowledged", "message": "AgentPass not yet active"}
+        auth_token = extra.get("auth")
+        if not auth_token:
+            return {"status": "error", "message": "TRUST requires authentication. Pass your API key in the auth field."}
+
+        task = payload.get("task") or payload.get("data", {}).get("task")
+        if not task:
+            return {"status": "error", "message": "TRUST requires a 'task' in payload"}
+
+        data = payload.get("data", {}) if isinstance(payload.get("data"), dict) else {}
+        credential = data.get("credential", payload.get("credential", "general"))
+        sla = data.get("sla", payload.get("sla", "4hr"))
+        budget_credits = int(data.get("budget_credits", payload.get("budget_credits", 0)))
+        items = data.get("items", payload.get("items"))
+        callback_url = data.get("callback_url", payload.get("callback_url"))
+        target = data.get("target", payload.get("target"))
+
+        target_name, target_url = _resolve_human_agent(target)
+        if not target_name or not target_url:
+            return {"status": "error", "message": "No human agent available to handle TRUST request"}
+
+        credits_charged = 0
+        if budget_credits > 0:
+            deduct_result = _deduct_for_trust(auth_token, agent_name, budget_credits)
+            if not deduct_result.get("ok"):
+                return {"status": "error", "message": f"Credit deduction failed: {deduct_result.get('error')}"}
+            credits_charged = budget_credits
+
+        budget_usd = _credits_to_usd(budget_credits)
+
+        checkpoint_body = {
+            "task": task,
+            "credential": credential,
+            "sla": sla,
+            "budget": budget_usd,
+            "payload_meta": {
+                "items": items,
+                "source_agent": agent_name,
+            },
+            "callback_url": callback_url,
+        }
+
+        dispatch_result = _dispatch_to_human(target_url, checkpoint_body)
+
+        if dispatch_result.get("error"):
+            if credits_charged > 0:
+                _refund_trust_credits(auth_token, credits_charged, "dispatch_failed")
+            return {"status": "error", "message": f"Dispatch failed: {dispatch_result['error']}"}
+
+        checkpoint_id = dispatch_result.get("checkpoint_id")
+        if not checkpoint_id:
+            if credits_charged > 0:
+                _refund_trust_credits(auth_token, credits_charged, "no_checkpoint_id")
+            return {"status": "error", "message": "Human agent did not return a checkpoint_id"}
+
+        _trust_checkpoints[checkpoint_id] = {
+            "auth": auth_token,
+            "credits": credits_charged,
+            "budget_usd": budget_usd,
+            "agent_name": agent_name,
+            "target": target_name,
+            "target_url": target_url,
+            "refunded": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        return {
+            "status": "dispatched",
+            "checkpoint_id": checkpoint_id,
+            "target": target_name,
+            "credits_charged": credits_charged,
+            "budget_usd": budget_usd,
+            "poll_url": f"/agent/{agent_name}/trust/{checkpoint_id}",
+            "sla": sla,
+            "message": f"Task dispatched to {target_name}. Poll for status.",
+        }
 
     if verb == "LEARN":
         return {"status": "acknowledged", "message": "Knowledge ingestion coming soon"}
+
+
+@app.get("/agent/{agent_name}/trust/{checkpoint_id}")
+async def trust_poll(agent_name: str, checkpoint_id: str):
+    """Poll the status of a TRUST checkpoint."""
+    tracking = _trust_checkpoints.get(checkpoint_id)
+    if not tracking:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+
+    result = _poll_human_checkpoint(tracking["target_url"], checkpoint_id)
+
+    status = result.get("status", "")
+    if status in ("expired", "rejected") and not tracking.get("refunded"):
+        credits = tracking.get("credits", 0)
+        if credits > 0:
+            refunded = _refund_trust_credits(tracking["auth"], credits, status)
+            if refunded:
+                tracking["refunded"] = True
+                result["refunded"] = True
+                result["credits_refunded"] = credits
+
+    result["checkpoint_id"] = checkpoint_id
+    result["target"] = tracking.get("target")
+    result["credits_charged"] = tracking.get("credits", 0)
+    result["budget_usd"] = tracking.get("budget_usd", 0)
+
+    return result
 
 
 if __name__ == "__main__":

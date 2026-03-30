@@ -41,6 +41,8 @@ class RegisterRequest(BaseModel):
     entry_function: Optional[str] = None
     entry_file: Optional[str] = None
     tags: Optional[list] = None
+    agent_type: Optional[str] = None
+    execution_mode: Optional[str] = "sync"
     owner_api_key: Optional[str] = None
 
 
@@ -70,6 +72,10 @@ def _get_db() -> sqlite3.Connection:
     columns = [row[1] for row in cursor.fetchall()]
     if "owner_api_key" not in columns:
         conn.execute("ALTER TABLE agents ADD COLUMN owner_api_key TEXT")
+    if "agent_type" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN agent_type TEXT")
+    if "execution_mode" not in columns:
+        conn.execute("ALTER TABLE agents ADD COLUMN execution_mode TEXT DEFAULT 'sync'")
 
     conn.execute("""
         CREATE TABLE IF NOT EXISTS balances (
@@ -153,8 +159,9 @@ def register_agent(req: RegisterRequest, request: Request):
         db.execute(
             """
             INSERT INTO agents (name, description, url, language, verbs,
-                                entry_function, entry_file, tags, created_at, last_seen, status, owner_api_key)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?)
+                                entry_function, entry_file, tags, created_at, last_seen, status,
+                                agent_type, execution_mode, owner_api_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
             ON CONFLICT(name) DO UPDATE SET
                 description    = excluded.description,
                 url            = excluded.url,
@@ -165,6 +172,8 @@ def register_agent(req: RegisterRequest, request: Request):
                 tags           = excluded.tags,
                 last_seen      = excluded.last_seen,
                 status         = 'active',
+                agent_type     = excluded.agent_type,
+                execution_mode = excluded.execution_mode,
                 owner_api_key  = excluded.owner_api_key
             """,
             (
@@ -178,11 +187,13 @@ def register_agent(req: RegisterRequest, request: Request):
                 json.dumps(req.tags or []),
                 now,
                 now,
+                req.agent_type,
+                req.execution_mode or "sync",
                 req.owner_api_key,
             ),
         )
         db.commit()
-        return {"registered": True, "name": req.name}
+        return {"registered": True, "name": req.name, "execution_mode": req.execution_mode or "sync"}
 
 
 @app.get("/registry/search")
