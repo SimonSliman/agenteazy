@@ -79,6 +79,21 @@ def _generate_deploy_script(gateway_src: str) -> str:
     """Generate the Modal deployment script for the gateway."""
     gateway_src_repr = repr(gateway_src)
 
+    humanagent_api_key = os.environ.get("HUMANAGENT_API_KEY", "")
+    credits_to_usd_rate = os.environ.get("CREDITS_TO_USD_RATE", "0.001")
+
+    # Build secrets dict from env vars
+    secrets_dict = {}
+    if humanagent_api_key:
+        secrets_dict["HUMANAGENT_API_KEY"] = humanagent_api_key
+    if credits_to_usd_rate != "0.001":
+        secrets_dict["CREDITS_TO_USD_RATE"] = credits_to_usd_rate
+
+    if secrets_dict:
+        secrets_line = f'secrets=[modal.Secret.from_dict({secrets_dict!r})],\n'
+    else:
+        secrets_line = ""
+
     return f'''"""Auto-generated Modal deployment script for agenteazy-gateway."""
 
 import modal
@@ -117,7 +132,7 @@ image = (
     memory=512,
     cpu=1.0,
     volumes={{"/agents": volume}},
-)
+    {secrets_line})
 @modal.concurrent(max_inputs=100)
 @modal.asgi_app()
 def serve():
