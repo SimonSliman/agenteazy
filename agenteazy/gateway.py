@@ -850,17 +850,17 @@ async def trust_poll(agent_name: str, checkpoint_id: str):
     """Poll the status of a TRUST checkpoint."""
     tracking = _trust_checkpoints.get(checkpoint_id)
     if not tracking:
-        # Fallback: checkpoint not in local memory (different container instance).
-        # Look up HumanAgent directly from registry and poll it.
-        human_name, human_url = _resolve_human_agent(None)
-        if not human_url:
-            raise HTTPException(status_code=404, detail="Checkpoint not found and no human agent available")
-        result = _poll_human_checkpoint(human_url, checkpoint_id)
+        resolved_name, target_url = _resolve_human_agent(None)
+        if not resolved_name or not target_url:
+            raise HTTPException(status_code=404, detail="No human agent available to poll")
+        result = _poll_human_checkpoint(target_url, checkpoint_id)
+        if result.get("error") and result.get("status") != "expired":
+            raise HTTPException(status_code=404, detail=result["error"])
         result["checkpoint_id"] = checkpoint_id
-        result["target"] = human_name
+        result["target"] = resolved_name
         result["credits_charged"] = None
         result["budget_usd"] = None
-        result["_note"] = "Tracking metadata unavailable (served by different instance)"
+        result["_note"] = "Tracking metadata unavailable (different gateway instance)"
         return result
 
     result = _poll_human_checkpoint(tracking["target_url"], checkpoint_id)
