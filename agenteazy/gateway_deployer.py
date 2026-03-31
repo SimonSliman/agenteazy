@@ -120,7 +120,7 @@ image = (
         "babel", "pint", "sumy", "nltk",
     ])
     .add_local_file({gateway_src_repr}, remote_path="/app/gateway.py", copy=True)
-    .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "{DEFAULT_REGISTRY_URL}"}})
+    .env({{"PYTHONDONTWRITEBYTECODE": "1", "AGENTEAZY_AGENTS_ROOT": "/agents", "AGENTEAZY_REGISTRY_URL": "{DEFAULT_REGISTRY_URL}", "HUMANAGENT_API_KEY": "{humanagent_api_key}", "CREDITS_TO_USD_RATE": "{credits_to_usd_rate}"}})
     .run_commands("python -m nltk.downloader punkt_tab punkt")
     .workdir("/app")
 )
